@@ -322,19 +322,6 @@ will extend this into:
 
 ---
 
-## Questions for 52°North Mentors
-
-The `spec/ogc-mcp-mapping.json` is a draft for mentor review. Specific questions:
-
-1. Does the spec structure (one module per API type, cross_cutting_concerns section)
-   align with the intended design?
-2. Are `natural_language_triggers` the right mechanism for intent-to-tool mapping?
-3. Should `summary_fields` live in the spec or purely in the proxy implementation?
-4. Any conflicts with 52°North's ongoing internal MCP work to be aware of?
-5. Is there a 52°North EDR server available for EDR module development?
-
----
-
 ## References
 
 - [MCP Specification](https://modelcontextprotocol.io/docs)
@@ -345,10 +332,6 @@ The `spec/ogc-mcp-mapping.json` is a draft for mentor review. Specific questions
 - [pygeoapi](https://pygeoapi.io/)
 - [FastMCP](https://github.com/jlowin/fastmcp)
 - [Coding Challenge Repository](https://github.com/PranavAngrish/OGC-API---Processes)
-- [52°North GSoC 2026 Project Idea](https://52north.org/gsoc-2026-mcp-for-ogc-apis)
+- [52°North GSoC 2026 Project Idea](https://52north.org/outreach-dissemination/google-summer-of-code/project-ideas/)
 
 ---
-
-## License
-
-Apache 2.0 — consistent with 52°North's licensing model.
