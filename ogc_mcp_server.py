@@ -552,7 +552,6 @@ def records_list_collections() -> str:
 Use records_search with a keyword to find specific datasets."""
 
 
-
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
