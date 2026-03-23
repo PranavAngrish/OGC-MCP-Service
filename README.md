@@ -349,4 +349,4 @@ will extend this into:
 - [Coding Challenge Repository](https://github.com/PranavAngrish/OGC-API---Processes)
 - [52°North GSoC 2026 Project Idea](https://52north.org/outreach-dissemination/google-summer-of-code/project-ideas/)
 
----
+
