@@ -1,4 +1,4 @@
-<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 45 47 PM" src="https://github.com/user-attachments/assets/f76254fc-37d0-4f02-adc0-1d587abfc852" /># OGC API – MCP Bridge
+# OGC API – MCP Bridge
 
 A working prototype that bridges natural language to OGC API operations through the
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/docs). Part of a
@@ -172,9 +172,9 @@ System: Resolves "52°North Spatial Information Research GmbH" → 51.9691°N, 7
         Displays on map
         Explains: "extends roughly from longitude 7.5867° to 7.6047° (east–west) and latitude 51.9636° to 51.9746° (north–south)"
 
-<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 46 04 PM" src="https://github.com/user-attachments/assets/2a4b70dc-14f1-40b5-93a7-b4b8c564c17a" />
-```
 
+```
+<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 46 04 PM" src="https://github.com/user-attachments/assets/2a4b70dc-14f1-40b5-93a7-b4b8c564c17a" />
 
 ### Demo 2 — Multi-Step Workflow Chaining
 
@@ -187,9 +187,9 @@ System: Uses buffer polygon from previous message as zone — no re-input needed
         Returns: mean=15.08, std_dev=2.08, range=6.2
         Interprets: "The terrain within the 1km buffer around 52°North's office is quite flat, which is consistent with Münster's generally low-lying geography. The average elevation is around 15 metres, with only a 6.2m spread between the lowest (12.1m) and highest (18.3m) points. Sonnet 4.6"
 
-<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 46 33 PM" src="https://github.com/user-attachments/assets/51cbc507-818d-4ab4-acf3-657cf466a9a0" />
-```
 
+```
+<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 46 33 PM" src="https://github.com/user-attachments/assets/51cbc507-818d-4ab4-acf3-657cf466a9a0" />
 
 ### Demo 3 — Cross-API Chaining (Features → Processes)
 
@@ -203,10 +203,10 @@ System: Calls features_get_feature_by_id("lakes", "ontario") → demo.pygeoapi.i
         Returns statistics with domain interpretation
 
 Two different OGC API servers. Zero manual coordination. One sentence.
+
+```
 <img width="784" height="741" alt="Screenshot 2026-03-23 at 12 47 09 PM" src="https://github.com/user-attachments/assets/b494f6a9-1489-4ff9-92b9-5b6a078354c3" />
 <img width="801" height="475" alt="Screenshot 2026-03-23 at 12 47 24 PM" src="https://github.com/user-attachments/assets/b82c8d08-f26b-451b-95ec-c78281c4a436" />
-```
-
 
 ### Demo 4 — Records Catalogue Discovery
 
@@ -217,9 +217,9 @@ System: Calls records_search(keyword="temperature") → demo.pycsw.org
         No results → automatically broadens to "climate"
         Returns 30 MACC atmospheric datasets
 
-<img width="796" height="533" alt="Screenshot 2026-03-23 at 12 48 00 PM" src="https://github.com/user-attachments/assets/77a76852-fca5-401e-b839-e0a61c023412" />
-```
 
+```
+<img width="796" height="533" alt="Screenshot 2026-03-23 at 12 48 00 PM" src="https://github.com/user-attachments/assets/77a76852-fca5-401e-b839-e0a61c023412" />
 
 ---
 
