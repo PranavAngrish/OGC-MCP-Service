@@ -1,0 +1,966 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://52north.org/ogc-mcp-mapping/v0.1.0/spec.json",
+  "title": "OGC API – MCP Mapping Specification",
+  "description": "A formal, machine-readable specification that translates core functionality of OGC APIs into MCP tool concepts. Enables LLM agents to interact with any OGC-compliant server through a unified, natural-language-friendly interface.",
+  "version": "0.1.0",
+  "status": "draft",
+  "license": "Apache-2.0",
+
+  "definitions": {
+
+    "tool": {
+      "type": "object",
+      "required": ["id", "module", "description", "natural_language_triggers", "http_mapping", "input_schema", "output_schema", "error_handling"],
+      "properties": {
+        "id":          { "type": "string", "description": "Unique tool identifier. Format: {module}_{operation}" },
+        "module":      { "type": "string", "description": "Which OGC API module this tool belongs to" },
+        "description": { "type": "string", "description": "Human and LLM readable description of what this tool does" },
+        "natural_language_triggers": {
+          "type": "array",
+          "description": "Example phrases that should trigger this tool",
+          "items": { "type": "string" }
+        },
+        "prerequisites": {
+          "type": "array",
+          "description": "Tool IDs that should typically be called before this one",
+          "items": { "type": "string" }
+        },
+        "http_mapping":   { "$ref": "#/definitions/http_mapping" },
+        "input_schema":   { "$ref": "#/definitions/input_schema" },
+        "output_schema":  { "$ref": "#/definitions/output_schema" },
+        "error_handling": { "$ref": "#/definitions/error_handling" }
+      }
+    },
+
+    "http_mapping": {
+      "type": "object",
+      "required": ["method", "path_template"],
+      "properties": {
+        "method":        { "type": "string", "enum": ["GET", "POST", "DELETE"] },
+        "path_template": { "type": "string", "description": "URL path with {placeholders} for path parameters" },
+        "path_params":   { "type": "array", "items": { "type": "string" } },
+        "query_params":  { "type": "array", "items": { "type": "string" } },
+        "body_params":   { "type": "array", "items": { "type": "string" } },
+        "default_params": {
+          "type": "object",
+          "description": "Parameters always added automatically (e.g. f=json)"
+        }
+      }
+    },
+
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type", "required", "description"],
+            "properties": {
+              "name":        { "type": "string" },
+              "type":        { "type": "string" },
+              "required":    { "type": "boolean" },
+              "description": { "type": "string" },
+              "default":     {},
+              "example":     {},
+              "validation":  { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+
+    "output_schema": {
+      "type": "object",
+      "required": ["description", "summary_fields"],
+      "properties": {
+        "description":    { "type": "string", "description": "What the output contains" },
+        "format":         { "type": "string" },
+        "summary_fields": {
+          "type": "array",
+          "description": "Fields to extract and present to the LLM — avoid dumping full raw response",
+          "items": { "type": "string" }
+        },
+        "followup_tools": {
+          "type": "array",
+          "description": "Tools that can naturally follow this one",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "error_handling": {
+      "type": "object",
+      "properties": {
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code":           { "type": "string" },
+              "plain_english":  { "type": "string", "description": "What to tell the user" },
+              "llm_action":     { "type": "string", "description": "What the LLM should do" }
+            }
+          }
+        }
+      }
+    }
+
+  },
+
+  "modules": {
+
+    "processes": {
+      "id": "processes",
+      "title": "OGC API – Processes",
+      "version": "1.0",
+      "description": "Enables execution of geospatial and analytical processes on a server. Use for any computation, analysis, or transformation of spatial data.",
+      "base_path": "/",
+      "conformance": [
+        "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/core",
+        "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/json",
+        "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/job-list"
+      ],
+      "tools": [
+
+        {
+          "id": "processes_list",
+          "module": "processes",
+          "description": "Lists all geospatial processes available on this OGC API server. Use this when the user asks what the system can do, what analyses are available, or whether a specific process exists. This should be called first when exploring capabilities.",
+          "natural_language_triggers": [
+            "what can you do",
+            "what processes are available",
+            "what analyses can you run",
+            "is there a process for",
+            "what geospatial operations are supported",
+            "show me what tools are available"
+          ],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/processes",
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": []
+          },
+          "output_schema": {
+            "description": "List of available processes with their IDs, titles, and descriptions",
+            "format": "application/json",
+            "summary_fields": ["id", "title", "description"],
+            "followup_tools": ["processes_describe", "processes_execute_sync", "processes_execute_async"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "401",
+                "plain_english": "Authentication required. Please log in to access processes.",
+                "llm_action": "Ask the user for credentials"
+              },
+              {
+                "code": "CONNECTION_ERROR",
+                "plain_english": "Cannot reach the OGC API server. Check that the server is running.",
+                "llm_action": "Inform the user and suggest checking the server"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "processes_describe",
+          "module": "processes",
+          "description": "Gets the full description of a specific process including its required inputs, expected outputs, and what it does. Always call this before executing a process you have not used before.",
+          "natural_language_triggers": [
+            "tell me more about the X process",
+            "what inputs does X need",
+            "what does the X process do",
+            "describe the X process",
+            "how do I use X"
+          ],
+          "prerequisites": ["processes_list"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/processes/{process_id}",
+            "path_params": ["process_id"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "process_id",
+                "type": "string",
+                "required": true,
+                "description": "The ID of the process to describe",
+                "example": "buffer"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Full process metadata including input schema and output schema",
+            "format": "application/json",
+            "summary_fields": ["id", "title", "description", "inputs", "outputs"],
+            "followup_tools": ["processes_execute_sync", "processes_execute_async"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Process not found. The process ID may be incorrect.",
+                "llm_action": "Call processes_list to show available process IDs"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "processes_execute_sync",
+          "module": "processes",
+          "description": "Executes a process synchronously and returns the result immediately. Use for quick processes where the result is expected within seconds. Do not use Prefer: respond-async header.",
+          "natural_language_triggers": [
+            "run the X process",
+            "execute X",
+            "calculate X",
+            "create a buffer around",
+            "compute statistics for",
+            "analyse this area"
+          ],
+          "prerequisites": ["processes_describe"],
+          "http_mapping": {
+            "method": "POST",
+            "path_template": "/processes/{process_id}/execution",
+            "path_params": ["process_id"],
+            "body_params": ["inputs"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "process_id",
+                "type": "string",
+                "required": true,
+                "description": "The ID of the process to execute",
+                "example": "buffer"
+              },
+              {
+                "name": "inputs",
+                "type": "object",
+                "required": true,
+                "description": "Process-specific inputs as defined by the process description. Must match the input schema returned by processes_describe.",
+                "example": { "latitude": 12.9716, "longitude": 77.5946, "distance": 500 }
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Process result — format depends on process type. Buffer returns GeoJSON Feature. Zonal stats returns statistics object.",
+            "format": "application/json",
+            "summary_fields": ["type", "geometry", "properties", "statistics"],
+            "followup_tools": ["processes_execute_sync", "features_get_items"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "400",
+                "plain_english": "Invalid inputs. One or more required inputs are missing or have wrong types.",
+                "llm_action": "Call processes_describe to check the required input schema and try again"
+              },
+              {
+                "code": "500",
+                "plain_english": "The process failed on the server.",
+                "llm_action": "Inform the user and suggest checking input values"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "processes_execute_async",
+          "module": "processes",
+          "description": "Executes a process asynchronously. Returns a job ID immediately. Use for long-running processes. After calling this, use jobs_get_status to monitor progress and jobs_get_results when complete.",
+          "natural_language_triggers": [
+            "run this in the background",
+            "submit this job",
+            "start a long analysis",
+            "process this asynchronously"
+          ],
+          "prerequisites": ["processes_describe"],
+          "http_mapping": {
+            "method": "POST",
+            "path_template": "/processes/{process_id}/execution",
+            "path_params": ["process_id"],
+            "body_params": ["inputs"],
+            "default_params": { "f": "json" },
+            "headers": { "Prefer": "respond-async" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "process_id",
+                "type": "string",
+                "required": true,
+                "description": "The ID of the process to execute",
+                "example": "buffer"
+              },
+              {
+                "name": "inputs",
+                "type": "object",
+                "required": true,
+                "description": "Process-specific inputs matching the process input schema",
+                "example": { "latitude": 12.9716, "longitude": 77.5946, "distance": 500 }
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Job submission confirmation with jobID for tracking",
+            "format": "application/json",
+            "summary_fields": ["jobID", "status", "processID"],
+            "followup_tools": ["jobs_get_status"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "400",
+                "plain_english": "Invalid inputs provided.",
+                "llm_action": "Call processes_describe to verify required inputs"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "jobs_list",
+          "module": "processes",
+          "description": "Lists all submitted jobs and their current status. Use when the user wants to check on previous jobs or see what analyses have been run.",
+          "natural_language_triggers": [
+            "show my jobs",
+            "what jobs are running",
+            "check my previous analyses",
+            "list all jobs"
+          ],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/jobs",
+            "default_params": { "f": "json" }
+          },
+          "input_schema": { "parameters": [] },
+          "output_schema": {
+            "description": "List of jobs with IDs, process names, status, and timestamps",
+            "format": "application/json",
+            "summary_fields": ["jobID", "processID", "status", "created", "finished"],
+            "followup_tools": ["jobs_get_status", "jobs_get_results"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "401",
+                "plain_english": "Authentication required to view jobs.",
+                "llm_action": "Ask user for credentials"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "jobs_get_status",
+          "module": "processes",
+          "description": "Gets the current status of a specific job. Poll this after submitting an async job until status is successful or failed.",
+          "natural_language_triggers": [
+            "check job status",
+            "is my job done",
+            "what is the status of job X",
+            "has the analysis finished"
+          ],
+          "prerequisites": ["processes_execute_async"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/jobs/{job_id}",
+            "path_params": ["job_id"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "job_id",
+                "type": "string",
+                "required": true,
+                "description": "The job UUID returned by processes_execute_async",
+                "example": "33136070-1c40-11f1-8ba3-15d7c94da424"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Job status including progress percentage and timestamps",
+            "format": "application/json",
+            "summary_fields": ["jobID", "status", "progress", "created", "started", "finished"],
+            "followup_tools": ["jobs_get_results"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Job not found. It may have been deleted.",
+                "llm_action": "Call jobs_list to show available jobs"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "jobs_get_results",
+          "module": "processes",
+          "description": "Retrieves the output of a completed job. Only call this when jobs_get_status shows status as successful.",
+          "natural_language_triggers": [
+            "get the results of job X",
+            "retrieve the output",
+            "show me the analysis results",
+            "what did the job produce"
+          ],
+          "prerequisites": ["jobs_get_status"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/jobs/{job_id}/results",
+            "path_params": ["job_id"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "job_id",
+                "type": "string",
+                "required": true,
+                "description": "The job UUID of the completed job",
+                "example": "33136070-1c40-11f1-8ba3-15d7c94da424"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "The process output. Format depends on process type.",
+            "format": "application/json",
+            "summary_fields": ["type", "geometry", "properties", "statistics"],
+            "followup_tools": ["jobs_delete"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Results not found. The job may not be complete yet.",
+                "llm_action": "Call jobs_get_status first to verify the job is successful"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "jobs_delete",
+          "module": "processes",
+          "description": "Dismisses and deletes a job and its results. Call this after retrieving results to clean up.",
+          "natural_language_triggers": [
+            "delete job X",
+            "clean up my jobs",
+            "dismiss this job",
+            "remove the job"
+          ],
+          "http_mapping": {
+            "method": "DELETE",
+            "path_template": "/jobs/{job_id}",
+            "path_params": ["job_id"]
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "job_id",
+                "type": "string",
+                "required": true,
+                "description": "The job UUID to delete",
+                "example": "33136070-1c40-11f1-8ba3-15d7c94da424"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Confirmation that the job was deleted",
+            "format": "application/json",
+            "summary_fields": ["status"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Job not found. It may already have been deleted.",
+                "llm_action": "Inform the user the job does not exist"
+              }
+            ]
+          }
+        }
+
+      ]
+    },
+
+    "features": {
+      "id": "features",
+      "title": "OGC API – Features",
+      "version": "1.0",
+      "description": "Provides access to vector geospatial data — points, lines, and polygons. Use for querying buildings, roads, lakes, boundaries, and any other geographic features.",
+      "base_path": "/",
+      "conformance": [
+        "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core",
+        "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/json",
+        "http://www.opengis.net/spec/ogcapi-features-2/1.0/conf/cql2-text"
+      ],
+      "tools": [
+
+        {
+          "id": "features_list_collections",
+          "module": "features",
+          "description": "Lists all available feature collections on the OGC API – Features server. Use this first to discover what datasets are available before querying.",
+          "natural_language_triggers": [
+            "what datasets are available",
+            "what layers exist",
+            "what geographic data can I query",
+            "what collections are there",
+            "show me available data"
+          ],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections",
+            "default_params": { "f": "json" }
+          },
+          "input_schema": { "parameters": [] },
+          "output_schema": {
+            "description": "List of collections with IDs, titles, and descriptions",
+            "format": "application/json",
+            "summary_fields": ["id", "title", "description"],
+            "followup_tools": ["features_get_collection_info", "features_get_items"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "CONNECTION_ERROR",
+                "plain_english": "Cannot reach the Features server.",
+                "llm_action": "Check server URL and try again"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "features_get_collection_info",
+          "module": "features",
+          "description": "Gets detailed information about a specific feature collection including its geographic extent, attributes, and coordinate system.",
+          "natural_language_triggers": [
+            "tell me about the X dataset",
+            "what area does X cover",
+            "what attributes does X have",
+            "describe the X collection"
+          ],
+          "prerequisites": ["features_list_collections"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections/{collection_id}",
+            "path_params": ["collection_id"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "collection_id",
+                "type": "string",
+                "required": true,
+                "description": "The collection ID from features_list_collections",
+                "example": "lakes"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Collection metadata including bounding box, CRS, and links",
+            "format": "application/json",
+            "summary_fields": ["id", "title", "description", "extent", "crs"],
+            "followup_tools": ["features_get_items"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Collection not found.",
+                "llm_action": "Call features_list_collections to show valid collection IDs"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "features_get_items",
+          "module": "features",
+          "description": "Fetches features from a collection. Can filter by geographic area (bbox) or limit results. Use for retrieving actual geographic data — roads, buildings, lakes, boundaries.",
+          "natural_language_triggers": [
+            "get features from X",
+            "show me X in this area",
+            "fetch data from X",
+            "find X near Y",
+            "get all X within this bbox",
+            "retrieve features from the X dataset"
+          ],
+          "prerequisites": ["features_list_collections"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections/{collection_id}/items",
+            "path_params": ["collection_id"],
+            "query_params": ["bbox", "limit", "filter"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "collection_id",
+                "type": "string",
+                "required": true,
+                "description": "The collection to query",
+                "example": "lakes"
+              },
+              {
+                "name": "bbox",
+                "type": "string",
+                "required": false,
+                "description": "Bounding box filter as minLon,minLat,maxLon,maxLat",
+                "example": "77.4,12.8,77.8,13.1",
+                "validation": {
+                  "format": "minLon,minLat,maxLon,maxLat",
+                  "note": "Coordinates in WGS84 decimal degrees"
+                }
+              },
+              {
+                "name": "limit",
+                "type": "integer",
+                "required": false,
+                "description": "Maximum number of features to return",
+                "default": 10,
+                "validation": { "minimum": 1, "maximum": 50 }
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "GeoJSON FeatureCollection with matching features and their properties",
+            "format": "application/geo+json",
+            "summary_fields": ["id", "geometry.type", "properties"],
+            "followup_tools": [
+              "features_get_feature_by_id",
+              "processes_execute_sync"
+            ]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "400",
+                "plain_english": "Invalid query parameters. Check bbox format.",
+                "llm_action": "Verify bbox is in minLon,minLat,maxLon,maxLat format"
+              },
+              {
+                "code": "404",
+                "plain_english": "Collection not found.",
+                "llm_action": "Call features_list_collections to show valid IDs"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "features_get_feature_by_id",
+          "module": "features",
+          "description": "Gets the complete details and geometry of a single feature by its ID. Use this when you need the exact geometry of a feature to pass into another operation such as zonal statistics or buffer analysis.",
+          "natural_language_triggers": [
+            "get the geometry of X",
+            "fetch feature X",
+            "get full details of X",
+            "I need the boundary of X",
+            "get the shape of X"
+          ],
+          "prerequisites": ["features_get_items"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections/{collection_id}/items/{feature_id}",
+            "path_params": ["collection_id", "feature_id"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "collection_id",
+                "type": "string",
+                "required": true,
+                "description": "The collection the feature belongs to",
+                "example": "lakes"
+              },
+              {
+                "name": "feature_id",
+                "type": "string",
+                "required": true,
+                "description": "The ID of the specific feature",
+                "example": "ontario"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Complete GeoJSON Feature with full geometry and all properties",
+            "format": "application/geo+json",
+            "summary_fields": ["id", "geometry", "properties"],
+            "followup_tools": [
+              "processes_execute_sync",
+              "processes_execute_async"
+            ]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Feature not found.",
+                "llm_action": "Call features_get_items to find valid feature IDs"
+              }
+            ]
+          }
+        }
+
+      ]
+    },
+
+    "records": {
+      "id": "records",
+      "title": "OGC API – Records",
+      "version": "1.0",
+      "description": "Provides access to metadata catalogues for discovering available geospatial datasets. Use this FIRST when the user wants to find data — before querying Features or EDR.",
+      "base_path": "/",
+      "conformance": [
+        "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/core",
+        "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/json",
+        "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/opensearch"
+      ],
+      "tools": [
+
+        {
+          "id": "records_list_collections",
+          "module": "records",
+          "description": "Lists all available catalogue collections on the OGC API – Records server. Use this first to discover what catalogues are available.",
+          "natural_language_triggers": [
+            "what catalogues are available",
+            "what metadata collections exist",
+            "show me the data catalogue"
+          ],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections",
+            "default_params": { "f": "json" }
+          },
+          "input_schema": { "parameters": [] },
+          "output_schema": {
+            "description": "List of catalogue collections with IDs and descriptions",
+            "format": "application/json",
+            "summary_fields": ["id", "title", "description"],
+            "followup_tools": ["records_search"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "CONNECTION_ERROR",
+                "plain_english": "Cannot reach the Records server.",
+                "llm_action": "Check server URL and inform the user"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "records_search",
+          "module": "records",
+          "description": "Searches a geospatial catalogue for datasets by keyword or geographic area. This should be the first step when a user wants to find data — use it to discover what is available before querying Features or EDR. If a keyword returns no results, try broader synonyms automatically.",
+          "natural_language_triggers": [
+            "find data about X",
+            "is there data for X",
+            "search for X datasets",
+            "what data exists for X",
+            "discover datasets about X",
+            "look up X in the catalogue"
+          ],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections/{catalogue_id}/items",
+            "path_params": ["catalogue_id"],
+            "query_params": ["q", "bbox", "limit"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "catalogue_id",
+                "type": "string",
+                "required": true,
+                "description": "The catalogue collection ID from records_list_collections",
+                "example": "metadata:main"
+              },
+              {
+                "name": "keyword",
+                "type": "string",
+                "required": false,
+                "description": "Search term to find relevant datasets. If no results, try broader synonyms.",
+                "example": "temperature"
+              },
+              {
+                "name": "bbox",
+                "type": "string",
+                "required": false,
+                "description": "Geographic filter as minLon,minLat,maxLon,maxLat",
+                "example": "77.4,12.8,77.8,13.1"
+              },
+              {
+                "name": "limit",
+                "type": "integer",
+                "required": false,
+                "default": 10,
+                "description": "Maximum records to return"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "List of matching dataset records with titles, descriptions, and metadata",
+            "format": "application/json",
+            "summary_fields": ["id", "title", "description", "type", "bbox"],
+            "followup_tools": ["records_get_record"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "EMPTY_RESULTS",
+                "plain_english": "No datasets found for that search term.",
+                "llm_action": "Try a broader synonym automatically before telling the user"
+              }
+            ]
+          }
+        },
+
+        {
+          "id": "records_get_record",
+          "module": "records",
+          "description": "Gets complete metadata for a specific catalogue record including download links, data format, coordinate system, temporal coverage, and data provider.",
+          "natural_language_triggers": [
+            "get details about dataset X",
+            "show me the metadata for X",
+            "where can I download X",
+            "what format is dataset X in"
+          ],
+          "prerequisites": ["records_search"],
+          "http_mapping": {
+            "method": "GET",
+            "path_template": "/collections/{catalogue_id}/items/{record_id}",
+            "path_params": ["catalogue_id", "record_id"],
+            "default_params": { "f": "json" }
+          },
+          "input_schema": {
+            "parameters": [
+              {
+                "name": "catalogue_id",
+                "type": "string",
+                "required": true,
+                "description": "The catalogue collection ID",
+                "example": "metadata:main"
+              },
+              {
+                "name": "record_id",
+                "type": "string",
+                "required": true,
+                "description": "The record ID from records_search results",
+                "example": "MACC.temp"
+              }
+            ]
+          },
+          "output_schema": {
+            "description": "Full record metadata including links, format, CRS, temporal coverage, keywords",
+            "format": "application/json",
+            "summary_fields": ["title", "description", "type", "bbox", "links", "keywords"],
+            "followup_tools": ["features_get_items"]
+          },
+          "error_handling": {
+            "errors": [
+              {
+                "code": "404",
+                "plain_english": "Record not found.",
+                "llm_action": "Call records_search to find valid record IDs"
+              }
+            ]
+          }
+        }
+
+      ]
+    }
+
+  },
+
+  "cross_cutting_concerns": {
+
+    "server_capability_negotiation": {
+      "description": "Before calling any tool, the proxy must check the server's /conformance endpoint to verify it supports the required operation. If a capability is not supported, the LLM must adapt its approach.",
+      "conformance_endpoint": "/conformance",
+      "behaviour": "If server does not support CQL2 filters, fall back to bbox-only queries. If server does not support async execution, use sync. Never fail silently."
+    },
+
+    "pagination": {
+      "description": "OGC API responses are paginated. The proxy must handle multi-page results transparently.",
+      "detection": "Check for 'next' link in response links array",
+      "behaviour": "For LLM consumption, fetch first page only and indicate total count. For complete results, follow next links automatically up to a configurable maximum.",
+      "default_limit": 10,
+      "max_limit": 50
+    },
+
+    "crs_handling": {
+      "description": "All spatial operations must use consistent coordinate reference systems.",
+      "default_crs": "EPSG:4326",
+      "coordinate_order": "longitude, latitude (GeoJSON standard)",
+      "behaviour": "Always request data in EPSG:4326. If server returns different CRS, transform before returning to LLM. Never pass raw degree values to metric operations without reprojection."
+    },
+
+    "format_negotiation": {
+      "description": "Always request JSON format for LLM consumption.",
+      "default_format": "json",
+      "query_param": "f=json",
+      "behaviour": "Always append ?f=json to all GET requests. Never request HTML format for programmatic use."
+    },
+
+    "response_summarisation": {
+      "description": "Raw OGC API responses can be very large and exceed LLM context windows. The proxy must summarise before passing to the LLM.",
+      "rules": [
+        "Never pass raw GeoJSON with more than 20 coordinate pairs directly to the LLM",
+        "Summarise feature lists to ID, type, and key properties only",
+        "For statistics results, present all values clearly formatted",
+        "Always include total count even when returning partial results",
+        "Store full responses in proxy memory for follow-up tool calls"
+      ]
+    },
+
+    "authentication": {
+      "description": "Credential management is handled by the proxy layer. The LLM never sees or manages credentials.",
+      "supported_methods": ["api_key", "jwt_bearer", "none"],
+      "behaviour": "Inject credentials automatically on every request. Refresh tokens before expiry. On 401 response, attempt token refresh once before failing."
+    },
+
+    "error_translation": {
+      "description": "All HTTP errors must be translated to plain English before reaching the LLM.",
+      "mappings": {
+        "400": "Invalid request — check input parameters",
+        "401": "Authentication required",
+        "403": "Access denied — insufficient permissions",
+        "404": "Resource not found",
+        "429": "Too many requests — slow down",
+        "500": "Server error — try again later",
+        "CONNECTION_ERROR": "Cannot reach server — check connection"
+      }
+    }
+
+  },
+
+  "extensibility": {
+    "description": "New OGC API modules can be added without modifying existing modules.",
+    "instructions": [
+      "Add a new entry under 'modules' with a unique module ID",
+      "Define tools following the tool schema in definitions",
+      "Register the module in the proxy's module registry",
+      "Existing modules are unaffected"
+    ],
+    "planned_modules": ["edr", "coverages", "tiles", "styles", "3d-geovolumes"]
+  }
+
+}
