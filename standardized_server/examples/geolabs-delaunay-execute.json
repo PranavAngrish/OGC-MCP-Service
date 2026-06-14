@@ -1,0 +1,17 @@
+{
+  "inputs": {
+    "InputPoints": {
+      "type": "text/xml",
+      "href": "https://demo.pygeoapi.io/master/collections/dutch_windmills/items?f=json"
+    }
+  },
+  "outputs": {
+    "Result": {
+      "format": {
+        "mediaType": "application/json"
+      },
+      "transmissionMode": "value"
+    }
+  }
+}
+

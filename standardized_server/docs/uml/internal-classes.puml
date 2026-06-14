@@ -1,0 +1,226 @@
+@startuml OGC_API_MCP_Internal_Classes
+title Experimental OGC API MCP Reference Server - Internal Class Model
+
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam shadowing false
+hide empty members
+
+package "MCP Adapter" {
+  class FastMCP <<external MCP SDK>> {
+    +resource(uri)
+    +tool()
+    +run(transport)
+  }
+
+  class AppFactory <<module: app.py>> {
+    +create_mcp_server(config_path, transport): FastMCP
+  }
+
+  class Entrypoint <<module: __main__.py>> {
+    +build_parser(): ArgumentParser
+    +main(): None
+  }
+}
+
+package "OGC Services" {
+  class CommonService {
+    -_registry: ServerRegistry
+    -_client: OgcHttpClient
+    +landing_page(server_id): dict
+    +conformance(server_id): dict
+    +get_resource(server_id, path, query): dict
+  }
+
+  class FeaturesService {
+    -_registry: ServerRegistry
+    -_client: OgcHttpClient
+    +list_collections(server_id): dict
+    +describe_collection(collection_id, server_id): dict
+    +get_items(collection_id, server_id, query): dict
+    +get_item(collection_id, item_id, server_id): dict
+  }
+
+  class RecordsService {
+    -_registry: ServerRegistry
+    -_client: OgcHttpClient
+    +list_collections(server_id): dict
+    +search(server_id, collection_id, query_text, bbox, limit, query): dict
+    +get_record(record_id, server_id, collection_id): dict
+  }
+
+  class ProcessesService {
+    -_registry: ServerRegistry
+    -_client: OgcHttpClient
+    +list_processes(server_id): dict
+    +describe(process_id, server_id): dict
+    +execute(process_id, execute_request, server_id, execution_mode, wait_seconds): dict
+    +list_jobs(server_id, query): dict
+    +get_job_status(job_id, server_id): dict
+    +get_job_results(job_id, server_id): dict
+    +dismiss_job(job_id, server_id): dict
+  }
+}
+
+package "Configuration and Registry" {
+  class ConfigLoader <<module: config.py>> {
+    +load_settings(path): RegistrySettings
+    +parse_settings(raw): RegistrySettings
+  }
+
+  class ServerRegistry {
+    -_settings: RegistrySettings
+    -_servers: dict
+    +get(server_id, service): ServerProfile
+    +list(): list
+  }
+
+  class RegistrySettings <<frozen dataclass>> {
+    +servers: tuple[ServerProfile]
+    +default_servers: dict
+  }
+
+  class ServerProfile <<frozen dataclass>> {
+    +id: str
+    +title: str
+    +base_url: str
+    +services: frozenset[str]
+    +description: str
+    +enabled: bool
+    +paths: dict
+    +defaults: dict
+    +auth: AuthProfile
+    +security: SecurityPolicy
+    +limits: RequestLimits
+    +path(name, fallback): str
+  }
+
+  class AuthProfile <<frozen dataclass>> {
+    +type: str
+    +token_env: str
+    +api_key_env: str
+    +api_key_header: str
+    +username_env: str
+    +password_env: str
+  }
+
+  class SecurityPolicy <<frozen dataclass>> {
+    +allow_private_networks: bool
+    +allowed_reference_hosts: tuple[str]
+    +allow_unlisted_reference_hosts: bool
+    +validate_execute_references: bool
+  }
+
+  class RequestLimits <<frozen dataclass>> {
+    +timeout_seconds: float
+    +max_response_bytes: int
+  }
+}
+
+package "Transport, Security, and Results" {
+  class OgcHttpClient {
+    -_transport: httpx.BaseTransport
+    -_required_env(name, server_id): str
+    -_auth_headers(server): dict
+    +request(server, method, path, query, json_body, accept, prefer): OgcResponse
+    -_decode(body, content_type): Any
+  }
+
+  class OgcResponse <<frozen dataclass>> {
+    +server_id: str
+    +method: str
+    +path: str
+    +status_code: int
+    +headers: dict
+    +content_type: str
+    +data: Any
+    +location: str
+    +metadata(): dict
+  }
+
+  class SecurityValidator <<module: security.py>> {
+    +validate_http_url(url, allow_private_networks, allowed_hosts, label): str
+    +validate_relative_path(path): str
+    +validate_execute_references(payload, policy): None
+    +host_matches(hostname, pattern): bool
+  }
+
+  class ResultEnvelope <<module: result.py>> {
+    +parse_json_object(value, label, allow_empty): dict
+    +success(operation, server, response, data, guidance): dict
+    +failure(operation, error): dict
+    +invoke(operation, callback): dict
+  }
+}
+
+package "Errors" {
+  class OgcMcpError {
+    +code: str
+    +message: str
+    +details: dict
+    +to_dict(): dict
+  }
+  class ConfigurationError
+  class ServerNotFoundError
+  class ServiceNotSupportedError
+  class SecurityPolicyError
+  class TransportError
+  class UpstreamResponseError
+}
+
+Entrypoint --> AppFactory
+AppFactory ..> FastMCP : constructs
+AppFactory --> ConfigLoader
+AppFactory --> ServerRegistry
+AppFactory --> OgcHttpClient
+AppFactory --> CommonService
+AppFactory --> FeaturesService
+AppFactory --> RecordsService
+AppFactory --> ProcessesService
+AppFactory --> ResultEnvelope
+
+CommonService --> ServerRegistry
+FeaturesService --> ServerRegistry
+RecordsService --> ServerRegistry
+ProcessesService --> ServerRegistry
+
+CommonService --> OgcHttpClient
+FeaturesService --> OgcHttpClient
+RecordsService --> OgcHttpClient
+ProcessesService --> OgcHttpClient
+ProcessesService ..> SecurityValidator : validates input hrefs
+
+ConfigLoader ..> RegistrySettings : creates
+RegistrySettings "1" *-- "1..*" ServerProfile
+ServerProfile "1" *-- "1" AuthProfile
+ServerProfile "1" *-- "1" SecurityPolicy
+ServerProfile "1" *-- "1" RequestLimits
+ServerRegistry --> RegistrySettings
+ServerRegistry ..> SecurityValidator : validates base URLs
+
+OgcHttpClient --> ServerProfile
+OgcHttpClient ..> SecurityValidator : validates relative paths
+OgcHttpClient ..> OgcResponse : creates
+ResultEnvelope --> OgcResponse
+ResultEnvelope --> OgcMcpError
+
+OgcMcpError <|-- ConfigurationError
+OgcMcpError <|-- ServerNotFoundError
+OgcMcpError <|-- ServiceNotSupportedError
+OgcMcpError <|-- SecurityPolicyError
+OgcMcpError <|-- TransportError
+OgcMcpError <|-- UpstreamResponseError
+
+note right of AppFactory
+Registers 18 stable ogc_* tools and
+two MCP resources on the FastMCP server.
+end note
+
+note right of OgcHttpClient
+Credential values stay outside tool arguments.
+The client injects them from environment
+variables immediately before outbound HTTP.
+end note
+
+@enduml
+

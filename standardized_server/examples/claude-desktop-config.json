@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ogc-api-reference": {
+      "command": "/absolute/path/to/python",
+      "args": [
+        "-m",
+        "ogc_mcp_reference",
+        "--config",
+        "/absolute/path/to/standardized_server/config.example.json"
+      ]
+    }
+  }
+}

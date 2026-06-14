@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ogc-mcp-reference-server"
+version = "0.1.0"
+description = "Specification-oriented MCP reference server for OGC APIs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27,<1",
+  "mcp>=1.26,<2",
+]
+
+[project.scripts]
+ogc-mcp-server = "ogc_mcp_reference.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

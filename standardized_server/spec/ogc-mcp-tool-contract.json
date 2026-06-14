@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://52north.org/ogc-mcp/spec/ogc-mcp-tool-contract-v0.1.json",
+  "title": "OGC API MCP Tool Contract",
+  "version": "0.1.0",
+  "status": "experimental-reference",
+  "description": "Stable MCP tool names and OGC HTTP mappings implemented by the Python reference server. This is a project artifact for review and evolution, not an adopted OGC Standard.",
+  "principles": [
+    "MCP clients select operator-registered server IDs, never arbitrary outbound hosts.",
+    "Credentials are injected by the MCP server and are never accepted as tool arguments.",
+    "OGC API discovery precedes execution.",
+    "Process input and output identifiers are preserved exactly as advertised by the upstream server.",
+    "Large datasets should be passed by reference when the upstream process supports references.",
+    "Every tool returns a structured result envelope with ok, operation, server, request, response, and data fields."
+  ],
+  "tools": [
+    {
+      "name": "ogc_servers_list",
+      "module": "registry",
+      "http_mapping": null,
+      "side_effect": false
+    },
+    {
+      "name": "ogc_common_get_landing_page",
+      "module": "common",
+      "http_mapping": "GET /",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_common_get_conformance",
+      "module": "common",
+      "http_mapping": "GET /conformance",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_common_get_resource",
+      "module": "common",
+      "http_mapping": "GET {registered-server-relative-path}",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_features_list_collections",
+      "module": "features",
+      "http_mapping": "GET /collections",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_features_describe_collection",
+      "module": "features",
+      "http_mapping": "GET /collections/{collectionId}",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_features_get_items",
+      "module": "features",
+      "http_mapping": "GET /collections/{collectionId}/items",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_features_get_item",
+      "module": "features",
+      "http_mapping": "GET /collections/{collectionId}/items/{featureId}",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_records_list_collections",
+      "module": "records",
+      "http_mapping": "GET /collections",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_records_search",
+      "module": "records",
+      "http_mapping": "GET /collections/{collectionId}/items",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_records_get_record",
+      "module": "records",
+      "http_mapping": "GET /collections/{collectionId}/items/{recordId}",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_processes_list",
+      "module": "processes",
+      "http_mapping": "GET /processes",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_processes_describe",
+      "module": "processes",
+      "http_mapping": "GET /processes/{processId}",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_processes_execute",
+      "module": "processes",
+      "http_mapping": "POST /processes/{processId}/execution",
+      "side_effect": true
+    },
+    {
+      "name": "ogc_jobs_list",
+      "module": "processes",
+      "http_mapping": "GET /jobs",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_jobs_get_status",
+      "module": "processes",
+      "http_mapping": "GET /jobs/{jobId}",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_jobs_get_results",
+      "module": "processes",
+      "http_mapping": "GET /jobs/{jobId}/results",
+      "side_effect": false
+    },
+    {
+      "name": "ogc_jobs_dismiss",
+      "module": "processes",
+      "http_mapping": "DELETE /jobs/{jobId}",
+      "side_effect": true
+    }
+  ]
+}
+
