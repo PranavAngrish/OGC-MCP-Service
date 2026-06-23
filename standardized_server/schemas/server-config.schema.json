@@ -20,6 +20,12 @@
       "items": {
         "$ref": "#/$defs/server"
       }
+    },
+    "store": {
+      "$ref": "#/$defs/store"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
     }
   },
   "additionalProperties": false,
@@ -81,7 +87,7 @@
       "type": "object",
       "properties": {
         "type": {
-          "enum": ["none", "bearer_env", "api_key_env", "basic_env"]
+          "enum": ["none", "bearer_env", "api_key_env", "basic_env", "jwt_bearer"]
         },
         "token_env": {
           "type": "string"
@@ -97,6 +103,27 @@
         },
         "password_env": {
           "type": "string"
+        },
+        "login_path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "refresh_path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "token_json_path": {
+          "type": "string"
+        },
+        "refresh_token_json_path": {
+          "type": "string"
+        },
+        "expires_in_json_path": {
+          "type": "string"
+        },
+        "refresh_window_seconds": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "additionalProperties": false
@@ -135,6 +162,49 @@
         "max_response_bytes": {
           "type": "integer",
           "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "store": {
+      "type": "object",
+      "description": "Pluggable backend for proxy plan and proxy-memory state. backend=\"memory\" (default) is process-local and only correct for a single-worker stdio deployment. backend=\"redis\" is required for a multi-worker or multi-replica streamable-http deployment.",
+      "properties": {
+        "backend": {
+          "enum": ["memory", "redis"],
+          "default": "memory"
+        },
+        "redis_url_env": {
+          "type": "string",
+          "description": "Name of the environment variable holding the Redis connection URL. Required when backend is \"redis\"."
+        },
+        "key_prefix": {
+          "type": "string",
+          "default": "ogc_mcp"
+        },
+        "plan_ttl_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3600,
+          "description": "0 disables expiry."
+        },
+        "memory_ttl_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1800,
+          "description": "0 disables expiry."
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "description": "Operator-controlled toggles for the MCP tool surface itself.",
+      "properties": {
+        "expose_direct_execution_tools": {
+          "type": "boolean",
+          "default": false,
+          "description": "When false (default), ogc_processes_execute is not registered at all, so it cannot be called without going through the ogc_proxy_create_plan / ogc_proxy_confirm_plan human-confirmation gate. Enable only for low-level interoperability testing."
         }
       },
       "additionalProperties": false

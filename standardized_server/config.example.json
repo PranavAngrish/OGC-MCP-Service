@@ -1,79 +1,54 @@
 {
   "$schema": "./schemas/server-config.schema.json",
   "default_servers": {
-    "common": "pygeoapi-demo",
-    "features": "pygeoapi-demo",
-    "records": "pycsw-demo",
-    "processes": "geolabs"
+  "common": "pygeoapi-demo",
+  "features": "pygeoapi-demo",
+  "records": "pygeoapi-demo",
+  "processes": "geolabs-tb17"
+},
+  "store": {
+    "backend": "memory",
+    "plan_ttl_seconds": 3600,
+    "memory_ttl_seconds": 1800
+  },
+  "policy": {
+    "expose_direct_execution_tools": false
   },
   "servers": [
     {
-      "id": "geolabs",
-      "title": "GeoLabs OGC API - Processes",
-      "description": "Public OGC API - Processes implementation used for Delaunay integration testing.",
-      "base_url": "http://tb17.geolabs.fr:8119/ogc-api",
-      "services": ["common", "processes"],
-      "security": {
-        "allowed_reference_hosts": ["demo.pygeoapi.io"]
-      },
-      "limits": {
-        "timeout_seconds": 120,
-        "max_response_bytes": 2000000
-      }
-    },
-    {
-      "id": "cubewerx",
-      "title": "CubeWerx OGC API - Processes",
-      "description": "Public processing deployment with richer process metadata and long-running jobs.",
-      "base_url": "https://www.pvretano.com/cubewerx/cubeserv/default/ogcapi/processing",
-      "services": ["common", "processes"],
-      "security": {
-        "allowed_reference_hosts": ["www.pvretano.com"]
-      },
-      "limits": {
-        "timeout_seconds": 180,
-        "max_response_bytes": 2000000
-      }
-    },
-    {
-      "id": "pygeoapi-demo",
-      "title": "pygeoapi Demonstration Server",
-      "description": "Public OGC API deployment for Features, Records-style collections, and sample processes.",
-      "base_url": "https://demo.pygeoapi.io/master",
-      "services": ["common", "features", "records", "processes"],
-      "defaults": {
-        "records_collection": "dutch-metadata"
-      },
-      "security": {
-        "allowed_reference_hosts": ["demo.pygeoapi.io"]
-      }
-    },
-    {
-      "id": "pycsw-demo",
-      "title": "pycsw Records Demonstration Server",
-      "description": "Public OGC API - Records catalogue.",
-      "base_url": "https://demo.pycsw.org/gisdata",
-      "services": ["common", "records"],
-      "defaults": {
-        "records_collection": "metadata:main"
-      }
-    },
-    {
-      "id": "local-development",
-      "title": "Local OGC API Development Server",
-      "description": "Disabled template for a local OGC API deployment.",
-      "base_url": "http://localhost",
-      "services": ["common", "processes"],
-      "enabled": false,
-      "auth": {
-        "type": "bearer_env",
-        "token_env": "LOCAL_OGC_BEARER_TOKEN"
-      },
-      "security": {
-        "allow_private_networks": true,
-        "allowed_reference_hosts": ["demo.pygeoapi.io"]
-      }
-    }
+  "id": "pygeoapi-demo",
+  "title": "pygeoapi Demo",
+  "base_url": "https://demo.pygeoapi.io/master",
+  "services": ["common", "features", "records"],
+  "defaults": {
+    "records_collection": "dutch-metadata"
+  },
+  "security": {
+    "allow_private_networks": false,
+    "allowed_reference_hosts": [],
+    "allow_unlisted_reference_hosts": false,
+    "validate_execute_references": true
+  },
+  "limits": {
+    "timeout_seconds": 30,
+    "max_response_bytes": 5000000
+  }
+},
+{
+  "id": "geolabs-tb17",
+  "title": "GeoLabs tb17 Processes",
+  "base_url": "http://tb17.geolabs.fr:8119/ogc-api",
+  "services": ["processes"],
+  "security": {
+    "allow_private_networks": false,
+    "allowed_reference_hosts": ["demo.pygeoapi.io"],
+    "allow_unlisted_reference_hosts": false,
+    "validate_execute_references": true
+  },
+  "limits": {
+    "timeout_seconds": 60,
+    "max_response_bytes": 5000000
+  }
+}
   ]
 }
-

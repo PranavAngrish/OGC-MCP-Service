@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://52north.org/ogc-mcp/spec/ogc-mcp-tool-contract-v0.1.json",
+  "$id": "https://52north.org/ogc-mcp/spec/ogc-mcp-tool-contract-v0.2.json",
   "title": "OGC API MCP Tool Contract",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "status": "experimental-reference",
   "description": "Stable MCP tool names and OGC HTTP mappings implemented by the Python reference server. This is a project artifact for review and evolution, not an adopted OGC Standard.",
   "principles": [
@@ -11,7 +11,9 @@
     "OGC API discovery precedes execution.",
     "Process input and output identifiers are preserved exactly as advertised by the upstream server.",
     "Large datasets should be passed by reference when the upstream process supports references.",
-    "Every tool returns a structured result envelope with ok, operation, server, request, response, and data fields."
+    "Every tool returns a structured result envelope with ok, operation, server, request, response, and data fields.",
+    "Tools that can return large or unbounded upstream payloads default to response_mode=\"summary\" and store the full payload behind an opaque proxy memory handle.",
+    "Unmediated process execution (no human-confirmation gate) is opt-in at the server-configuration level, not the default tool surface."
   ],
   "tools": [
     {
@@ -19,6 +21,63 @@
       "module": "registry",
       "http_mapping": null,
       "side_effect": false
+    },
+    {
+      "name": "ogc_proxy_get_capabilities",
+      "module": "proxy",
+      "http_mapping": "GET /conformance",
+      "side_effect": false,
+      "summary": "Return normalized capability flags and active fallback rules for a registered server."
+    },
+    {
+      "name": "ogc_proxy_memory_list",
+      "module": "proxy",
+      "http_mapping": null,
+      "side_effect": false,
+      "summary": "List handles and summaries for full payloads stored inside the proxy."
+    },
+    {
+      "name": "ogc_proxy_memory_retrieve",
+      "module": "proxy",
+      "http_mapping": null,
+      "side_effect": false,
+      "summary": "Retrieve stored data from a proxy memory handle with paginated slicing. For FeatureCollections, increments offset by limit until has_more is false. Avoids copying the entire stored payload into model context at once."
+    },
+    {
+      "name": "ogc_proxy_create_plan",
+      "module": "proxy",
+      "http_mapping": "LangGraph workflow: discovery-backed validation",
+      "side_effect": false,
+      "summary": "Create a stored execution plan after validating process and collection identifiers and, on a best-effort basis, the execute_request inputs against the process's declared input schema (required fields and simple type mismatches)."
+    },
+    {
+      "name": "ogc_proxy_get_plan",
+      "module": "proxy",
+      "http_mapping": "LangGraph workflow state lookup",
+      "side_effect": false,
+      "summary": "Retrieve a stored plan and its current lifecycle state."
+    },
+    {
+      "name": "ogc_proxy_update_plan",
+      "module": "proxy",
+      "http_mapping": null,
+      "side_effect": false,
+      "summary": "Update the execute_request inputs of a needs_resolution plan and revalidate in place. Advances the plan to ready_for_confirmation when all inputs are valid, or returns an updated resolution_prompt with per_field_questions when issues remain. Preserves plan_id so the full lifecycle stays traceable under a single identifier. Always use this instead of creating a new plan when inputs need correction."
+    },
+    {
+      "name": "ogc_proxy_confirm_plan",
+      "module": "proxy",
+      "http_mapping": "LangGraph workflow human-in-the-loop resume",
+      "side_effect": true,
+      "summary": "Record explicit human approval or rejection before execution."
+    },
+    {
+      "name": "ogc_proxy_execute_plan",
+      "module": "proxy",
+      "http_mapping": "LangGraph workflow confirmed plan execution",
+      "side_effect": true,
+      "summary": "Execute a previously validated plan by plan_id only.",
+      "response_modes": ["summary", "raw"]
     },
     {
       "name": "ogc_common_get_landing_page",
@@ -54,7 +113,16 @@
       "name": "ogc_features_get_items",
       "module": "features",
       "http_mapping": "GET /collections/{collectionId}/items",
-      "side_effect": false
+      "side_effect": false,
+      "summary_fields": [
+        "id",
+        "geometry.type",
+        "properties.name",
+        "properties.title",
+        "properties.description"
+      ],
+      "response_modes": ["summary", "raw"],
+      "summary": "Default summary mode stores the full feature response in proxy memory and returns sanitized summary fields. Raw mode returns the full upstream FeatureCollection."
     },
     {
       "name": "ogc_features_get_item",
@@ -72,7 +140,9 @@
       "name": "ogc_records_search",
       "module": "records",
       "http_mapping": "GET /collections/{collectionId}/items",
-      "side_effect": false
+      "side_effect": false,
+      "response_modes": ["summary", "raw"],
+      "summary": "Default summary mode stores the full catalogue response in proxy memory and returns sanitized summary fields. Use ogc_proxy_memory_retrieve with the returned handle to page through the full record list. Raw mode returns the original upstream response unchanged."
     },
     {
       "name": "ogc_records_get_record",
@@ -96,7 +166,10 @@
       "name": "ogc_processes_execute",
       "module": "processes",
       "http_mapping": "POST /processes/{processId}/execution",
-      "side_effect": true
+      "side_effect": true,
+      "response_modes": ["summary", "raw"],
+      "enabled_when": "policy.expose_direct_execution_tools == true",
+      "summary": "Unmediated direct execution tool, not registered at all unless the operator opts in via policy.expose_direct_execution_tools. Has no built-in human-confirmation gate; prefer ogc_proxy_create_plan / ogc_proxy_confirm_plan / ogc_proxy_execute_plan for user-facing workflows."
     },
     {
       "name": "ogc_jobs_list",
@@ -114,14 +187,78 @@
       "name": "ogc_jobs_get_results",
       "module": "processes",
       "http_mapping": "GET /jobs/{jobId}/results",
-      "side_effect": false
+      "side_effect": false,
+      "response_modes": ["summary", "raw"],
+      "summary": "Default summary mode stores the full job-results payload in proxy memory and returns a sanitized summary. Raw mode returns the full upstream results envelope."
     },
     {
       "name": "ogc_jobs_dismiss",
       "module": "processes",
       "http_mapping": "DELETE /jobs/{jobId}",
-      "side_effect": true
+      "side_effect": true,
+      "summary": "Always registered regardless of policy.expose_direct_execution_tools: cancelling/deleting a job is lower-risk and more reversible than starting one, so it is not gated behind the human-confirmation plan flow."
     }
-  ]
+  ],
+  "capability_fallbacks": {
+    "principle": "Proxy implementations should consult cached conformance before optional behavior and select deterministic fallbacks when capabilities are absent.",
+    "required_fallbacks": [
+      {
+        "id": "async_to_sync",
+        "capability": "async",
+        "preferred": "Prefer: respond-async with job polling",
+        "fallback": "Synchronous execution without Prefer: respond-async",
+        "level": "MUST"
+      },
+      {
+        "id": "cql2_to_client_filter",
+        "capability": "cql2",
+        "preferred": "Server-side CQL2 filter query",
+        "fallback": "Fetch constrained data and apply the filter in the proxy",
+        "level": "MUST"
+      },
+      {
+        "id": "crs_to_client_reproject",
+        "capability": "crs_negotiation",
+        "preferred": "Request data in EPSG:4326 from the server",
+        "fallback": "Fetch server-default CRS and reproject in the proxy",
+        "level": "MUST"
+      }
+    ]
+  },
+  "workflow_lifecycle": {
+    "backend": "LangGraph when available, deterministic local workflow otherwise",
+    "states": [
+      "needs_resolution",
+      "ready_for_confirmation",
+      "confirmed",
+      "rejected",
+      "running",
+      "completed",
+      "failed"
+    ],
+    "required_sequence": [
+      "ogc_proxy_create_plan",
+      "[if resolution_required=true] → ask user per_field_questions one-at-a-time → ogc_proxy_update_plan [loop until resolution_required=false]",
+      "show confirmation_prompt.execute_request verbatim to user",
+      "ogc_proxy_confirm_plan (only after explicit user approval)",
+      "ogc_proxy_execute_plan"
+    ],
+    "execution_rule": "ogc_proxy_execute_plan must reject any plan that is not in the confirmed state.",
+    "input_validation": "ogc_proxy_create_plan and ogc_proxy_update_plan perform a best-effort, conservative check of execute_request inputs against the process's declared input schema (required-but-missing inputs and simple literal type mismatches). It is intentionally not a full JSON Schema validator: reference-form inputs, multi-occurrence inputs, and union (oneOf/anyOf/allOf/$ref) schemas are left unchecked to avoid false positives that would block a legitimate call. Any flagged issue is appended to the plan's unresolved list and keeps plan status at needs_resolution.",
+    "resolution_loop": "When create_plan returns resolution_required=true, the LLM must present resolution_prompt.per_field_questions to the user one question at a time and call ogc_proxy_update_plan with corrected inputs. This loop repeats until resolution_required=false. The same plan_id is reused throughout; do not create a new plan.",
+    "confirmation_rule": "When confirmation_required=true, the LLM must show the user confirmation_prompt.execute_request verbatim (not paraphrased) before calling ogc_proxy_confirm_plan. If any input was assumed rather than explicitly provided by the user, the plan should be rejected and inputs re-collected.",
+    "hitl_rules": [
+      "Never assume vague spatial inputs (e.g. 'near XYZ', 'draw a circle around') — always ask the user for exact coordinates and distances.",
+      "Never auto-confirm a plan — the user must explicitly approve the execute_request.",
+      "One question at a time when collecting missing inputs from resolution_prompt.per_field_questions.",
+      "Use ogc_proxy_update_plan to correct inputs; do not recreate the plan from scratch."
+    ]
+  },
+  "state_persistence": {
+    "principle": "Plan and proxy-memory state is stored through a pluggable key-value store so deployments can choose a topology-appropriate backend.",
+    "backends": ["memory", "redis"],
+    "memory_backend": "Process-local, in a single Python process. Correct for a single-worker stdio deployment. Not visible across workers, replicas, or restarts.",
+    "redis_backend": "Required for a Streamable HTTP deployment running more than one worker process or replica behind a load balancer, so a plan created by one worker is visible to a confirm/execute call routed to another.",
+    "expiry": "Plans and proxy-memory records expire after an operator-configured TTL (defaults: plan_ttl_seconds=3600, memory_ttl_seconds=1800) so abandoned state does not accumulate forever. A TTL of 0 disables expiry."
+  }
 }
-

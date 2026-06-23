@@ -65,6 +65,42 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             ServerRegistry(settings)
 
+    def test_rejects_string_boolean_values(self) -> None:
+        with self.assertRaises(ConfigurationError):
+            parse_settings(
+                {
+                    "servers": [
+                        {
+                            "id": "example",
+                            "base_url": "https://example.org",
+                            "services": ["common"],
+                            "security": {"allow_private_networks": "false"},
+                        }
+                    ]
+                }
+            )
+
+    def test_parses_jwt_bearer_auth_profile(self) -> None:
+        settings = parse_settings(
+            {
+                "servers": [
+                    {
+                        "id": "example",
+                        "base_url": "https://example.org",
+                        "services": ["common"],
+                        "auth": {
+                            "type": "jwt_bearer",
+                            "username_env": "OGC_USER",
+                            "password_env": "OGC_PASS",
+                            "login_path": "/auth/login",
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertEqual(settings.servers[0].auth.type, "jwt_bearer")
+        self.assertEqual(settings.servers[0].auth.login_path, "/auth/login")
+
 
 if __name__ == "__main__":
     unittest.main()

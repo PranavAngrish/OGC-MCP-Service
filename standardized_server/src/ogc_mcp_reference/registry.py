@@ -66,3 +66,7 @@ class ServerRegistry:
             }
             for server in sorted(self._servers.values(), key=lambda item: item.id)
         ]
+
+    def enabled_servers(self) -> tuple[ServerProfile, ...]:
+        """Return enabled server profiles for internal runtime services."""
+        return tuple(sorted(self._servers.values(), key=lambda item: item.id))

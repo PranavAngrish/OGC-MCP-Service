@@ -12,13 +12,20 @@ import httpx
 from .errors import ConfigurationError, TransportError, UpstreamResponseError
 from .models import AuthProfile, OgcResponse, ServerProfile
 from .security import validate_relative_path
+from .services.auth import TokenManager
 
 
 class OgcHttpClient:
     """Perform bounded requests against operator-approved OGC servers."""
 
-    def __init__(self, *, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        token_manager: TokenManager | None = None,
+    ) -> None:
         self._transport = transport
+        self._token_manager = token_manager or TokenManager(transport=transport)
 
     def _required_env(self, name: str, *, server_id: str) -> str:
         if not name:
@@ -46,6 +53,8 @@ class OgcHttpClient:
             password = self._required_env(auth.password_env, server_id=server.id)
             token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
             return {"Authorization": f"Basic {token}"}
+        if auth.type == "jwt_bearer":
+            return self._token_manager.bearer_header(server)
         raise ConfigurationError(f"Unsupported authentication type '{auth.type}'.")
 
     def request(
@@ -60,6 +69,50 @@ class OgcHttpClient:
         prefer: str = "",
     ) -> OgcResponse:
         """Send one request without following redirects."""
+        result = self._request_once(
+            server,
+            method,
+            path,
+            query=query,
+            json_body=json_body,
+            accept=accept,
+            prefer=prefer,
+        )
+        if result.status_code == 401 and server.auth.type == "jwt_bearer":
+            self._token_manager.invalidate(server.id)
+            result = self._request_once(
+                server,
+                method,
+                path,
+                query=query,
+                json_body=json_body,
+                accept=accept,
+                prefer=prefer,
+            )
+
+        if result.status_code >= 400:
+            raise UpstreamResponseError(
+                "The upstream OGC API returned an error response.",
+                status_code=result.status_code,
+                server_id=server.id,
+                method=result.method,
+                path=result.path,
+                response=result.data,
+            )
+        return result
+
+    def _request_once(
+        self,
+        server: ServerProfile,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, Any] | None = None,
+        json_body: Any = None,
+        accept: str = "application/json",
+        prefer: str = "",
+    ) -> OgcResponse:
+        """Send one bounded HTTP request and return the upstream status unchanged."""
         validate_relative_path(path)
         headers = {"Accept": accept, **self._auth_headers(server)}
         if json_body is not None:
@@ -112,15 +165,6 @@ class OgcHttpClient:
                 reason=str(exc),
             ) from exc
 
-        if result.status_code >= 400:
-            raise UpstreamResponseError(
-                "The upstream OGC API returned an error response.",
-                status_code=result.status_code,
-                server_id=server.id,
-                method=result.method,
-                path=result.path,
-                response=result.data,
-            )
         return result
 
     @staticmethod

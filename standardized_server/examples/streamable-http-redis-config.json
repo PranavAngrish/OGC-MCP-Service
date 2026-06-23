@@ -1,0 +1,30 @@
+{
+  "$schema": "../schemas/server-config.schema.json",
+  "default_servers": {
+    "common": "geolabs",
+    "features": "geolabs",
+    "records": "geolabs",
+    "processes": "geolabs"
+  },
+  "store": {
+    "backend": "redis",
+    "redis_url_env": "OGC_MCP_REDIS_URL",
+    "key_prefix": "ogc_mcp_prod",
+    "plan_ttl_seconds": 3600,
+    "memory_ttl_seconds": 1800
+  },
+  "policy": {
+    "expose_direct_execution_tools": false
+  },
+  "servers": [
+    {
+      "id": "geolabs",
+      "title": "GeoLabs Demo Processes",
+      "base_url": "https://demo.geolabs.fr/stable",
+      "services": ["common", "features", "records", "processes"],
+      "security": {
+        "allowed_reference_hosts": ["demo.pygeoapi.io"]
+      }
+    }
+  ]
+}

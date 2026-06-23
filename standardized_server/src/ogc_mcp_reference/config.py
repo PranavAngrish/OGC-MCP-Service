@@ -11,11 +11,14 @@ from .errors import ConfigurationError
 from .models import (
     SUPPORTED_AUTH_TYPES,
     SUPPORTED_SERVICES,
+    SUPPORTED_STORE_BACKENDS,
     AuthProfile,
     RegistrySettings,
     RequestLimits,
     SecurityPolicy,
+    ServerPolicy,
     ServerProfile,
+    StoreSettings,
 )
 
 
@@ -38,6 +41,31 @@ def _as_string_tuple(value: Any, label: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _as_bool(value: Any, label: str, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{label} must be a JSON boolean.")
+    return value
+
+
+def _as_positive_int(value: Any, label: str, *, default: int) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigurationError(f"{label} must be a positive integer.")
+    return value
+
+
+def _as_ttl_seconds(value: Any, label: str, *, default: int) -> int:
+    """Validate a TTL where 0 explicitly means 'never expires'."""
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ConfigurationError(f"{label} must be zero (disabled) or a positive integer of seconds.")
+    return value
+
+
 def _load_auth(value: Any, server_id: str) -> AuthProfile:
     raw = _as_object(value, f"servers.{server_id}.auth")
     auth_type = str(raw.get("type", "none"))
@@ -52,19 +80,39 @@ def _load_auth(value: Any, server_id: str) -> AuthProfile:
         api_key_header=str(raw.get("api_key_header", "X-API-Key")),
         username_env=str(raw.get("username_env", "")),
         password_env=str(raw.get("password_env", "")),
+        login_path=str(raw.get("login_path", "/auth/login")),
+        refresh_path=str(raw.get("refresh_path", "/auth/refresh")),
+        token_json_path=str(raw.get("token_json_path", "access_token")),
+        refresh_token_json_path=str(raw.get("refresh_token_json_path", "refresh_token")),
+        expires_in_json_path=str(raw.get("expires_in_json_path", "expires_in")),
+        refresh_window_seconds=_as_positive_int(
+            raw.get("refresh_window_seconds"),
+            f"servers.{server_id}.auth.refresh_window_seconds",
+            default=300,
+        ),
     )
 
 
 def _load_security(value: Any, server_id: str) -> SecurityPolicy:
     raw = _as_object(value, f"servers.{server_id}.security")
     return SecurityPolicy(
-        allow_private_networks=bool(raw.get("allow_private_networks", False)),
+        allow_private_networks=_as_bool(
+            raw.get("allow_private_networks"),
+            f"servers.{server_id}.security.allow_private_networks",
+        ),
         allowed_reference_hosts=_as_string_tuple(
             raw.get("allowed_reference_hosts", []),
             f"servers.{server_id}.security.allowed_reference_hosts",
         ),
-        allow_unlisted_reference_hosts=bool(raw.get("allow_unlisted_reference_hosts", False)),
-        validate_execute_references=bool(raw.get("validate_execute_references", True)),
+        allow_unlisted_reference_hosts=_as_bool(
+            raw.get("allow_unlisted_reference_hosts"),
+            f"servers.{server_id}.security.allow_unlisted_reference_hosts",
+        ),
+        validate_execute_references=_as_bool(
+            raw.get("validate_execute_references"),
+            f"servers.{server_id}.security.validate_execute_references",
+            default=True,
+        ),
     )
 
 
@@ -79,6 +127,37 @@ def _load_limits(value: Any, server_id: str) -> RequestLimits:
     return RequestLimits(
         timeout_seconds=timeout_seconds,
         max_response_bytes=max_response_bytes,
+    )
+
+
+def _load_store(value: Any) -> StoreSettings:
+    raw = _as_object(value, "store")
+    backend = str(raw.get("backend", "memory"))
+    if backend not in SUPPORTED_STORE_BACKENDS:
+        raise ConfigurationError(
+            f"store.backend must be one of {sorted(SUPPORTED_STORE_BACKENDS)}."
+        )
+    return StoreSettings(
+        backend=backend,
+        redis_url_env=str(raw.get("redis_url_env", "")),
+        key_prefix=str(raw.get("key_prefix", "ogc_mcp")),
+        plan_ttl_seconds=_as_ttl_seconds(
+            raw.get("plan_ttl_seconds"), "store.plan_ttl_seconds", default=3600
+        ),
+        memory_ttl_seconds=_as_ttl_seconds(
+            raw.get("memory_ttl_seconds"), "store.memory_ttl_seconds", default=1800
+        ),
+    )
+
+
+def _load_policy(value: Any) -> ServerPolicy:
+    raw = _as_object(value, "policy")
+    return ServerPolicy(
+        expose_direct_execution_tools=_as_bool(
+            raw.get("expose_direct_execution_tools"),
+            "policy.expose_direct_execution_tools",
+            default=False,
+        ),
     )
 
 
@@ -114,7 +193,7 @@ def _load_server(raw: Any, index: int) -> ServerProfile:
         base_url=base_url,
         services=frozenset(services),
         description=str(raw.get("description", "")),
-        enabled=bool(raw.get("enabled", True)),
+        enabled=_as_bool(raw.get("enabled"), f"servers.{server_id}.enabled", default=True),
         paths=dict(paths),
         defaults=dict(defaults),
         auth=_load_auth(raw.get("auth"), server_id),
@@ -139,7 +218,15 @@ def parse_settings(raw: Any) -> RegistrySettings:
     if not all(isinstance(key, str) and isinstance(value, str) for key, value in default_servers.items()):
         raise ConfigurationError("default_servers must map service names to server IDs.")
 
-    return RegistrySettings(servers=servers, default_servers=dict(default_servers))
+    store = _load_store(root.get("store"))
+    policy = _load_policy(root.get("policy"))
+
+    return RegistrySettings(
+        servers=servers,
+        default_servers=dict(default_servers),
+        store=store,
+        policy=policy,
+    )
 
 
 def load_settings(path: str | Path | None = None) -> RegistrySettings:
