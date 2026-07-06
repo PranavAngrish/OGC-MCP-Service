@@ -5,10 +5,6 @@ A working prototype that bridges natural language to OGC API operations through 
 GSoC 2026 project with [52°North](https://52north.org) —
 **MCP for OGC APIs: Developing Multi Context Protocols for the Suite of OGC APIs**.
 
-
-https://github.com/user-attachments/assets/88686992-9802-4f00-ba6d-ff0ba1f3d7e5
-
-
 ---
 
 ## What This Is
@@ -60,51 +56,32 @@ or any other language.
 
 ```json
 {
-  "id": "features_get_items",
-  "module": "features",
-  "description": "Fetches features from a collection...",
-  "natural_language_triggers": [
-    "get features from X",
-    "show me X in this area",
-    "find X near Y"
-  ],
-  "prerequisites": ["features_list_collections"],
-  "http_mapping": {
-    "method": "GET",
-    "path_template": "/collections/{collection_id}/items",
-    "path_params": ["collection_id"],
-    "query_params": ["bbox", "limit"],
-    "default_params": { "f": "json" }
-  },
-  "input_schema": { "parameters": [...] },
-  "output_schema": {
-    "description": "GeoJSON FeatureCollection...",
-    "summary_fields": ["id", "geometry.type", "properties"],
-    "followup_tools": ["features_get_feature_by_id", "processes_execute_sync"]
-  },
-  "error_handling": { "errors": [...] }
+  "auth": {
+    "type": "bearer_env",
+    "token_env": "MY_OGC_API_TOKEN"
+  }
 }
 ```
 
-**Current modules:**
+Supported auth modes:
 
-| Module | OGC API Type | Tools | Status |
-|--------|-------------|-------|--------|
-| `processes` | OGC API – Processes | 8 tools | ✅ Implemented |
-| `features` | OGC API – Features | 4 tools | ✅ Implemented |
-| `records` | OGC API – Records | 3 tools | ✅ Implemented |
-| `edr` | OGC API – EDR | — | 🔨 Planned |
+- `none`
+- `bearer_env`
+- `api_key_env`
+- `basic_env`
+- `jwt_bearer`
 
-**Cross-cutting concerns** documented in the spec:
-- Server capability negotiation (`/conformance` check before each operation)
-- Pagination (transparent multi-page result handling)
-- CRS handling (always EPSG:4326, automatic reprojection)
-- Response summarisation (prevents LLM context window overflow)
-- Authentication (JWT, API key, or none — injected by proxy, never seen by LLM)
-- Error translation (all HTTP errors → plain English + suggested LLM action)
+The model never receives secret values.
 
-**Extensibility:** New OGC API types are added by adding a new module entry to the
-JSON. Existing modules are unaffected.
+`jwt_bearer` profiles log in with username/password environment variables,
+cache access tokens, refresh before expiry when a refresh token is available,
+and retry once with a fresh login after a 401 response.
+
+### Storage Backend (Plans and Proxy Memory)
+
+Proxy plans and proxy-memory records (full payloads behind summary handles)
+are persisted through a pluggable backend, configured at the top level of the
+config file:
 
 ```json
 "extensibility": {
@@ -171,10 +148,7 @@ System: Resolves "52°North Spatial Information Research GmbH" → 51.9691°N, 7
         Gets 65-point GeoJSON polygon from local pygeoapi
         Displays on map
         Explains: "extends roughly from longitude 7.5867° to 7.6047° (east–west) and latitude 51.9636° to 51.9746° (north–south)"
-
-
 ```
-<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 46 04 PM" src="https://github.com/user-attachments/assets/2a4b70dc-14f1-40b5-93a7-b4b8c564c17a" />
 
 ### Demo 2 — Multi-Step Workflow Chaining
 
@@ -186,10 +160,7 @@ System: Uses buffer polygon from previous message as zone — no re-input needed
         Calls execute_zonal_stats(zone=<previous buffer>, values=[...])
         Returns: mean=15.08, std_dev=2.08, range=6.2
         Interprets: "The terrain within the 1km buffer around 52°North's office is quite flat, which is consistent with Münster's generally low-lying geography. The average elevation is around 15 metres, with only a 6.2m spread between the lowest (12.1m) and highest (18.3m) points. Sonnet 4.6"
-
-
 ```
-<img width="778" height="636" alt="Screenshot 2026-03-23 at 12 46 33 PM" src="https://github.com/user-attachments/assets/51cbc507-818d-4ab4-acf3-657cf466a9a0" />
 
 ### Demo 3 — Cross-API Chaining (Features → Processes)
 
@@ -203,10 +174,7 @@ System: Calls features_get_feature_by_id("lakes", "ontario") → demo.pygeoapi.i
         Returns statistics with domain interpretation
 
 Two different OGC API servers. Zero manual coordination. One sentence.
-
 ```
-<img width="784" height="741" alt="Screenshot 2026-03-23 at 12 47 09 PM" src="https://github.com/user-attachments/assets/b494f6a9-1489-4ff9-92b9-5b6a078354c3" />
-<img width="801" height="475" alt="Screenshot 2026-03-23 at 12 47 24 PM" src="https://github.com/user-attachments/assets/b82c8d08-f26b-451b-95ec-c78281c4a436" />
 
 ### Demo 4 — Records Catalogue Discovery
 
@@ -216,10 +184,8 @@ User:   "Search the geospatial catalogue for datasets about temperature"
 System: Calls records_search(keyword="temperature") → demo.pycsw.org
         No results → automatically broadens to "climate"
         Returns 30 MACC atmospheric datasets
-
-
+        Cross-references: "Also, demo.pygeoapi.io has gdps-temperature and icoads-sst"
 ```
-<img width="796" height="533" alt="Screenshot 2026-03-23 at 12 48 00 PM" src="https://github.com/user-attachments/assets/77a76852-fca5-401e-b839-e0a61c023412" />
 
 ---
 
@@ -235,118 +201,116 @@ System: Calls records_search(keyword="temperature") → demo.pycsw.org
 
 ### Setup
 
-```bash
-git clone https://github.com/PranavAngrish/gsoc-mcp
-cd gsoc-mcp
+  ```bash
+  pip install 'ogc-mcp-reference-server[redis]'
+  export OGC_MCP_REDIS_URL="redis://localhost:6379/0"
+  ```
 
-python3.11 -m venv venv
-source venv/bin/activate
-pip install mcp requests
-```
+  ```json
+  {
+    "store": {
+      "backend": "redis",
+      "redis_url_env": "OGC_MCP_REDIS_URL",
+      "key_prefix": "ogc_mcp_prod",
+      "plan_ttl_seconds": 3600,
+      "memory_ttl_seconds": 1800
+    }
+  }
+  ```
 
-### Start the MCP server
+  See [streamable-http-redis-config.json](examples/streamable-http-redis-config.json)
+  for a complete example.
 
-```bash
-# Make sure your OGC API Docker stack is running first
-cd path/to/OGC-API---Processes
-make restart
+`plan_ttl_seconds` and `memory_ttl_seconds` control how long abandoned plans
+and unused memory handles survive before expiring; `0` disables expiry.
 
-# Then start the MCP server
-cd path/to/gsoc-mcp
-source venv/bin/activate
-python3.11 ogc_mcp_server_v2.py
-```
-
-### Connect to Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+### Tool Exposure Policy (Direct Execution Tools)
 
 ```json
 {
-  "mcpServers": {
-    "ogc-api": {
-      "command": "/path/to/gsoc-mcp/venv/bin/python3.11",
-      "args": ["/path/to/gsoc-mcp/ogc_mcp_server_v2.py"]
-    }
+  "policy": {
+    "expose_direct_execution_tools": false
   }
 }
 ```
 
-Restart Claude Desktop. You should see the hammer icon 🔨 in the chat input.
+`expose_direct_execution_tools` defaults to `false`. When `false`,
+`ogc_processes_execute` is not registered as an MCP tool at all -- the model
+cannot discover or call it, so it cannot run an arbitrary process execution
+that bypasses `ogc_proxy_create_plan` / `ogc_proxy_confirm_plan`. Set it to
+`true` only when you specifically need unmediated low-level access, for
+example interoperability testing against a new OGC API server.
 
-### Try it
+`ogc_jobs_dismiss` (cancel/delete a job) is always registered regardless of
+this flag: cancelling in-flight work is lower-risk and more reversible than
+starting new execution, so it is intentionally not behind the confirmation
+gate.
 
+## Proxy Runtime Tools
+
+The standard OGC tool names remain the canonical public surface. Tools that
+can return a large or unbounded upstream payload --
+`ogc_features_get_items`, `ogc_jobs_get_results`, `ogc_proxy_execute_plan`,
+and `ogc_processes_execute` when enabled -- default to a proxy-safe summary
+mode: the full payload is stored in proxy memory and the model receives
+sanitized summary fields plus a memory handle. Use `response_mode="raw"` only
+for low-level interoperability testing or intentionally small responses.
+
+The `ogc_proxy_*` tools are reserved for cross-cutting proxy workflows and state:
+
+- `ogc_proxy_get_capabilities`: loads `/conformance`, normalizes capability
+  flags, and reports active fallback rules.
+- `ogc_proxy_memory_list`: lists model-safe metadata for stored payloads.
+- `ogc_proxy_create_plan`: validates process and collection identifiers, and
+  on a best-effort basis the `execute_request` inputs against the process's
+  declared input schema (required fields, simple type mismatches), before
+  execution; returns a user-confirmable workflow state.
+- `ogc_proxy_get_plan`: retrieves the stored plan lifecycle state.
+- `ogc_proxy_confirm_plan`: records explicit human approval or rejection.
+- `ogc_proxy_execute_plan`: executes only a stored, confirmed plan by `plan_id`.
+
+This keeps high-volume data, credentials, and fallback decisions inside the
+proxy while giving the model compact, deterministic handles and summaries.
+
+The proxy workflow layer is designed to use LangGraph for orchestration when it
+is installed. In constrained development environments it falls back to the same
+deterministic local workflow nodes. Either backend enforces the same plan
+lifecycle: `needs_resolution` or `ready_for_confirmation`, then `confirmed`,
+then `running` and `completed` or `failed`.
+
+## Security Model
+
+- Only registered upstream deployments are callable.
+- Generic reads accept relative paths only.
+- Private and loopback networks are blocked unless the operator explicitly
+  enables them for a profile.
+- Process execution payloads are scanned recursively for HTTP(S) references.
+- Referenced input URLs are blocked until the operator configures an allowlist
+  or explicitly enables unlisted public reference hosts.
+- Redirects are returned to the caller but not followed automatically.
+- Upstream response size and request timeout are bounded per profile.
+- Unmediated direct process execution is opt-in and, when disabled (the
+  default), is not registered as a tool at all -- the gate is structural, not
+  a runtime check the model could be persuaded around.
+
+Application-level checks should be combined with network egress controls in
+production.
+
+## Tests
+
+```bash
+PYTHONPATH=standardized_server/src \
+  python -m unittest discover -s standardized_server/tests -v
 ```
-What geospatial processes are available on my OGC API server?
-Create a 500m buffer around the Eiffel Tower
-Get me 5 lakes from the features server
-Search the catalogue for flood risk datasets
-```
 
----
+The test suite does not depend on public network availability. It includes
+integration-style tests that call the actual registered FastMCP tools (not
+just the underlying service classes) via `mcp.call_tool(...)`, including
+coverage for the policy-gated direct execution tool and `response_mode`
+behavior.
 
-## Architecture
+## Versioned Artifacts
 
-```
-User (plain English)
-        │
-        ▼
-LLM (Claude / GPT-4 / any MCP-compatible client)
-        │ reads spec, decides which tool to call
-        ▼
-MCP Mapping Specification (ogc-mcp-mapping.json)
-        │ implemented by
-        ▼
-FastMCP Server (ogc_mcp_server_v2.py)
-        │ HTTP calls to three independent servers
-        ├── OGC API – Processes  →  localhost (pygeoapi)
-        ├── OGC API – Features   →  demo.pygeoapi.io
-        └── OGC API – Records    →  demo.pycsw.org
-```
-
-**Key design principles:**
-
-**Spec-first:** The JSON mapping spec is the primary deliverable. The Python server
-is one implementation of it. Anyone can implement the spec in any language.
-
-**LLM-agnostic:** Any MCP-compatible LLM client works — Claude, GPT-4, Llama, or
-any future model. No vendor lock-in.
-
-**Module independence:** Each OGC API type is a self-contained module. A developer
-building only a Processes integration imports only the Processes module.
-
-**Proxy pattern:** The MCP server acts as a proxy — translating LLM tool calls into
-OGC API HTTP requests, handling auth, CRS, pagination, and response summarisation
-transparently. The LLM never sees raw GeoJSON or HTTP errors.
-
----
-
-## Relationship to the GSoC Project
-
-This repository is the pre-GSoC prototype. The full GSoC project (May–August 2026)
-will extend this into:
-
-1. **Complete MCP mapping spec** — EDR module added, full CQL2 filter support,
-   formal validation tooling
-2. **Production proxy service** — configurable server registry, server capability
-   negotiation, robust error handling, >85% test coverage
-3. **Standalone showcase** — web-based chat + Leaflet map interface, no Claude
-   Desktop required, end-user focused (cool spot analysis demo)
-4. **pygeoapi integration path** — design aligned with pygeoapi plugin architecture
-   (following pygeoapi-odc-provider pattern) for eventual native integration
-
----
-
-## References
-
-- [MCP Specification](https://modelcontextprotocol.io/docs)
-- [OGC API – Processes](https://ogcapi.ogc.org/processes/)
-- [OGC API – Features](https://ogcapi.ogc.org/features/)
-- [OGC API – Records](https://ogcapi.ogc.org/records/)
-- [OGC API – EDR](https://ogcapi.ogc.org/edr/)
-- [pygeoapi](https://pygeoapi.io/)
-- [FastMCP](https://github.com/jlowin/fastmcp)
-- [Coding Challenge Repository](https://github.com/PranavAngrish/OGC-API---Processes)
-- [52°North GSoC 2026 Project Idea](https://52north.org/outreach-dissemination/google-summer-of-code/project-ideas/)
-
-
+- `spec/ogc-mcp-tool-contract.json`: experimental MCP tool contract
+- `schemas/server-config.schema.json`: operator configuration schema
+- `docs/CONFORMANCE.md`: checklist for future independent implementations
