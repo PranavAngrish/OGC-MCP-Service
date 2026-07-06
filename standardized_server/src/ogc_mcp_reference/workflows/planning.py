@@ -27,6 +27,7 @@ class PlanningWorkflow:
         capabilities: CapabilityCache,
         fallbacks: FallbackEngine,
     ) -> None:
+        
         self._planner = planner
         self._registry = registry
         self._capabilities = capabilities
@@ -35,7 +36,99 @@ class PlanningWorkflow:
         self.backend = "langgraph" if self._graph is not None else "local"
 
     def create_plan(self, plan_request: dict[str, Any]) -> dict[str, Any]:
-        """Create a plan and stop at the human confirmation boundary."""
+        """Create a plan and stop at the resolution/confirmation boundary.
+
+        Accepted input payload:
+            {
+                "operation": "process_execute",
+                "server_id": "geolabs-tb17",
+                "process_id": "Delaunay",
+                "execute_request": {
+                    "inputs": {
+                        "InputPoints": {
+                            "href": "https://features.example.test/collections/roads/items?f=json"
+                        }
+                    },
+                    "outputs": {
+                        "Result": {
+                            "transmissionMode": "value"
+                        }
+                    },
+                },
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "roads",
+                        "href": "https://features.example.test/collections/roads/items?f=json",
+                        "input_id": "InputPoints",
+                    }
+                ],
+            }
+
+        Output payload when ready for confirmation:
+            {
+                "ok": True,
+                "operation": "workflow.create_plan",
+                "workflow": {
+                    "backend": "local",
+                    "status": "awaiting_human_confirmation",
+                    "human_in_the_loop": True,
+                },
+                "resolution_required": False,
+                "confirmation_required": True,
+                "plan": {
+                    "plan_id": "plan_abc",
+                    "status": "ready_for_confirmation",
+                    "execute_request": {...},
+                    "requires_confirmation": True,
+                    ...
+                },
+                "resolution_prompt": {},
+                "confirmation_prompt": {
+                    "kind": "human_confirmation",
+                    "plan_id": "plan_abc",
+                    "execute_request": {...},
+                    "steps": [...],
+                    "unresolved": [],
+                    "instructions": "...",
+                },
+            }
+
+        Output payload when inputs need correction:
+            {
+                "ok": True,
+                "operation": "workflow.create_plan",
+                "workflow": {
+                    "backend": "local",
+                    "status": "needs_resolution",
+                    "human_in_the_loop": True,
+                },
+                "resolution_required": True,
+                "confirmation_required": False,
+                "plan": {
+                    "plan_id": "plan_abc",
+                    "status": "needs_resolution",
+                    "unresolved": [
+                        {
+                            "field": "inputs.InputPoints",
+                            "reason": "Required process input is missing...",
+                        }
+                    ],
+                    ...
+                },
+                "resolution_prompt": {
+                    "kind": "human_resolution_required",
+                    "plan_id": "plan_abc",
+                    "next_tool": "ogc_proxy_update_plan",
+                    "per_field_questions": [...],
+                },
+                "confirmation_prompt": {},
+            }
+
+        Errors:
+            OgcMcpError can propagate from ProxyPlanner.create_plan when the
+            operation or execute_request shape is invalid.
+        """
         initial_state: PlanningWorkflowState = {"plan_request": plan_request}
         state = self._invoke_graph(initial_state)
         plan = state.get("plan", {})
@@ -52,13 +145,18 @@ class PlanningWorkflow:
             has_process_id_error = any(
                 item.get("field") == "process_id" for item in unresolved
             )
-            if has_process_id_error:
+            has_source_metadata_error = any(
+                str(item.get("field", "")).startswith("sources")
+                for item in unresolved
+            )
+            if has_process_id_error or has_source_metadata_error:
                 _resolution_message = (
-                    "The plan contains an invalid process_id. "
-                    "Call ogc_processes_list to discover valid process IDs on this server, "
-                    "then create a NEW plan (ogc_proxy_create_plan) with the correct process_id. "
-                    "Do NOT call ogc_proxy_update_plan — it can only correct execute_request "
-                    "inputs and cannot change the process_id of an existing plan."
+                    "The plan contains invalid metadata outside execute_request "
+                    "(process_id or sources). Discover the correct process/source "
+                    "details, then create a NEW plan (ogc_proxy_create_plan). "
+                    "Do NOT call ogc_proxy_update_plan — it can only correct "
+                    "execute_request inputs and cannot change process_id or sources "
+                    "on an existing plan."
                 )
                 _next_tool = "ogc_proxy_create_plan"
             else:
@@ -109,6 +207,26 @@ class PlanningWorkflow:
         }
 
     def get_plan(self, plan_id: str) -> ProxyPlan | None:
+        """Return one stored plan by ID without changing workflow state.
+
+        Accepted input payload:
+            plan_id="plan_abc"
+
+        Output payload when found:
+            ProxyPlan(
+                plan_id="plan_abc",
+                operation="process_execute",
+                server_id="geolabs-tb17",
+                status="ready_for_confirmation",
+                steps=(...),
+                unresolved=(),
+                execute_request={...},
+                ...
+            )
+
+        Output payload when missing or expired:
+            None
+        """
         return self._planner.get_plan(plan_id)
 
     def confirm_plan(
@@ -119,7 +237,43 @@ class PlanningWorkflow:
         actor: str = "",
         comment: str = "",
     ) -> dict[str, Any]:
-        """Resume the workflow after explicit human approval or rejection."""
+        """Resume the workflow after explicit human approval or rejection.
+
+        Accepted input payload:
+            plan_id="plan_abc"
+            approved=True
+            actor="user"
+            comment="Looks correct"
+
+        Output payload:
+            {
+                "ok": True,
+                "operation": "workflow.confirm_plan",
+                "workflow": {
+                    "backend": "local",
+                    "status": "confirmed",
+                    "human_in_the_loop": False,
+                },
+                "plan": {
+                    "plan_id": "plan_abc",
+                    "status": "confirmed",
+                    "confirmed_at": 1720000000.0,
+                    "confirmation": {
+                        "approved": True,
+                        "actor": "user",
+                        "comment": "Looks correct",
+                    },
+                    ...
+                },
+            }
+
+        Error payloads:
+            Raises OgcMcpError("invalid_argument") for an unknown plan_id.
+            Raises OgcMcpError("plan_not_ready") when approving a plan that is
+            not ready_for_confirmation.
+            Raises OgcMcpError("plan_not_rejectable") when rejecting a plan in
+            a terminal or running state.
+        """
         plan = self._planner.confirm_plan(
             plan_id,
             approved=approved,
@@ -144,7 +298,44 @@ class PlanningWorkflow:
         execution_mode: str = "auto",
         wait_seconds: int = 10,
     ) -> dict[str, Any]:
-        """Execute a confirmed plan with capability-aware fallback selection."""
+        """Execute a confirmed plan with capability-aware fallback selection.
+
+        Accepted input payload:
+            plan_id="plan_abc"
+            execution_mode="async"  # "auto", "async", or "sync-wait"
+            wait_seconds=10
+
+        Output payload:
+            {
+                "ok": True,
+                "operation": "processes.execute",
+                "server": {...},
+                "request": {"method": "POST", "path": "/processes/Delaunay/execution"},
+                "response": {"status_code": 200, "content_type": "application/json"},
+                "data": {...},
+                "proxy": {
+                    "workflow_backend": "local",
+                    "requested_execution_mode": "async",
+                    "selected_execution_mode": "auto",
+                    "active_fallbacks": [
+                        {
+                            "id": "async_to_sync",
+                            "capability": "async",
+                            "preferred": "Prefer: respond-async with job polling",
+                            "fallback": "Synchronous execution without Prefer: respond-async",
+                            "level": "MUST",
+                        }
+                    ],
+                },
+            }
+
+        Error payloads:
+            Raises OgcMcpError("invalid_argument") for an unknown plan_id.
+            Raises OgcMcpError("plan_not_confirmed") when the stored plan has
+            not been explicitly confirmed.
+            Other OgcMcpError values can propagate from process execution,
+            capability loading, security checks, or upstream transport.
+        """
         plan = self._planner.get_plan(plan_id)
         if not plan:
             raise OgcMcpError("invalid_argument", "Unknown plan_id.", {"plan_id": plan_id})
@@ -165,6 +356,37 @@ class PlanningWorkflow:
         return result
 
     def _invoke_graph(self, initial_state: PlanningWorkflowState) -> PlanningWorkflowState:
+        """Run the plan-creation nodes through LangGraph or the local fallback.
+
+        Accepted input payload:
+            {
+                "plan_request": {
+                    "operation": "process_execute",
+                    "process_id": "Delaunay",
+                    "execute_request": {"inputs": {}},
+                }
+            }
+
+        Output payload when the plan needs resolution:
+            {
+                "plan_request": {...},
+                "plan_id": "plan_abc",
+                "plan": {"status": "needs_resolution", ...},
+                "status": "needs_resolution",
+            }
+
+        Output payload when the plan is ready for user confirmation:
+            {
+                "plan_request": {...},
+                "plan_id": "plan_abc",
+                "plan": {"status": "ready_for_confirmation", ...},
+                "status": "awaiting_human_confirmation",
+                "confirmation_prompt": {...},
+            }
+
+        In LangGraph mode, graph.invoke() returns the final state. In local
+        mode, this method manually calls the same node methods in sequence.
+        """
         if self._graph is not None:
             return self._graph.invoke(initial_state)
         created = self._create_plan_node(initial_state)
@@ -223,6 +445,28 @@ class PlanningWorkflow:
         return "end"
 
     def _build_graph(self) -> Any | None:
+        """Compile the optional LangGraph state graph for plan creation.
+
+        Accepted input payload:
+            No arguments. Uses bound methods:
+                self._create_plan_node
+                self._route_after_create
+                self._await_confirmation_node
+
+        Output payload when LangGraph is installed:
+            Compiled graph object with this flow:
+                START -> create_plan
+                create_plan -> await_confirmation when route is
+                    "await_confirmation"
+                create_plan -> END when route is "end"
+                await_confirmation -> END
+
+        Output payload when LangGraph is unavailable:
+            None
+
+        Returning None intentionally activates the deterministic local fallback
+        in _invoke_graph().
+        """
         try:
             from langgraph.graph import END, START, StateGraph
         except ImportError:

@@ -16,6 +16,7 @@ from .services.capabilities import CapabilityCache
 from .services.fallback import FallbackEngine
 from .services.memory import ProxyMemoryStore
 from .services.planner import ProxyPlanner
+from .services.process_descriptions import ProcessDescriptionCache
 from .services.sanitization import ResponseSanitizer
 from .services.store import build_store
 from .transport import OgcHttpClient
@@ -36,6 +37,7 @@ class ProxyRuntime:
     fallbacks: FallbackEngine
     memory: ProxyMemoryStore
     sanitizer: ResponseSanitizer
+    process_descriptions: ProcessDescriptionCache
     planner: ProxyPlanner
     workflow: PlanningWorkflow
     policy: ServerPolicy
@@ -65,6 +67,7 @@ def create_runtime(
     processes = ProcessesService(registry, client)
     capabilities = CapabilityCache(registry, client)
     fallbacks = FallbackEngine()
+    process_descriptions = ProcessDescriptionCache(processes)
 
     store_settings = resolved_settings.store
     memory_store = build_store(
@@ -82,6 +85,7 @@ def create_runtime(
     planner = ProxyPlanner(
         features=features,
         processes=processes,
+        process_descriptions=process_descriptions,
         store=plan_store,
         ttl_seconds=store_settings.plan_ttl_seconds,
     )
@@ -102,6 +106,7 @@ def create_runtime(
         fallbacks=fallbacks,
         memory=memory,
         sanitizer=sanitizer,
+        process_descriptions=process_descriptions,
         planner=planner,
         workflow=workflow,
         policy=resolved_settings.policy,

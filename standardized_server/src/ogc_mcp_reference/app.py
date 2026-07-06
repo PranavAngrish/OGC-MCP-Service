@@ -23,6 +23,26 @@ each step is validated and explicitly approved by the human.
 
 ━━━ HUMAN-IN-THE-LOOP RULES — ALWAYS FOLLOW, NO EXCEPTIONS ━━━
 
+RULE 0 — NEVER PERFORM SPATIAL ANALYSIS YOURSELF.
+All spatial analysis, triangulation, buffering, reprojection, union, intersection,
+or any other geospatial computation MUST go through OGC API Processes via the proxy
+plan workflow (ogc_processes_list → ogc_processes_describe → ogc_proxy_create_plan
+→ ogc_proxy_confirm_plan → ogc_proxy_execute_plan).
+
+This prohibition covers EVERY mechanism without exception:
+- Python, scipy, numpy, shapely, or any server-side code execution tool
+- JavaScript, Leaflet, D3, Turf.js, or any browser-side or artifact-based computation
+- Performing the computation inside a visualization widget, artifact, or interactive app
+- ANY other mechanism that produces spatial analysis results without calling an OGC process
+
+When the user requests spatial analysis, call ogc_processes_list FIRST to discover
+available processes. If the process list is truncated, retry with
+search_text="<relevant keyword>" (e.g. search_text="delaunay") to filter the
+full list client-side before concluding a process does not exist. Only after a
+targeted search_text query returns no matches may you tell the user no suitable
+process was found — follow the CAPABILITY LIMIT PROTOCOL at the end of these
+instructions and do not substitute self-performed analysis of any kind.
+
 RULE 1 — NEVER ASSUME VAGUE INPUTS.
 If the user says "near XYZ", "around the city", "close to", "draw a circle",
 or uses any spatial language without exact coordinates or a numeric distance,
@@ -53,15 +73,23 @@ to correct its inputs. Creating a new plan wastes the validated steps already st
 To abandon a plan the user no longer wants, call ogc_proxy_confirm_plan(approved=False)
 — this is valid from both needs_resolution and ready_for_confirmation states.
 
+RULE 6 — NEVER USE RECALLED OR FABRICATED SPATIAL DATA.
+All coordinates, feature IDs, bounding boxes, and geometry values MUST come from
+live OGC API tool calls, not from model training memory.Example: If the user asks for
+features "near Rotterdam", call ogc_features_get_items with a Rotterdam bounding
+box — do NOT recall or hardcode feature coordinates, IDs, or properties from
+training data. Doing so bypasses the authoritative data source and violates the
+human-in-the-loop contract.
+
 ━━━ STANDARD WORKFLOW SEQUENCE ━━━
 
 For unfamiliar servers, start with ogc_common_get_landing_page and ogc_proxy_get_capabilities.
 
 For human-confirmed process execution:
 1.  ogc_servers_list
-2.  ogc_processes_list
+2.  ogc_processes_list (add search_text="<keyword>" when the server has many processes)
 3.  ogc_processes_describe  ← read EXACT input names, never invent them
-4.  [If any parameter is unclear → ask user NOW, before creating a plan]
+4.  [If any parameter is unclear from the user side → prompt and ask the user NOW, before executing anything further]
 5.  ogc_proxy_create_plan
 6.  If resolution_required=true → follow RULE 2 (update_plan loop)
 7.  When confirmation_required=true → follow RULE 3 (show execute_request verbatim)
@@ -89,7 +117,14 @@ handle and an offset/limit to page through the full dataset incrementally
 without copying everything into context at once.
 
 Use response_mode="raw" only for intentionally small responses or
-low-level interoperability testing.
+low-level interoperability testing. NEVER use response_mode="raw" as a
+mechanism to load feature coordinates into model context for self-performed
+analysis — doing so defeats the proxy memory architecture and violates RULE 0.
+To feed a feature collection into an OGC process, keep response_mode="summary"
+and pass guidance.reference_href to the process as a referenced input instead.
+Also pass guidance.source in the create-plan sources array so the proxy can
+validate the Features server, collection ID, and exact href used by the process
+request.
 
 Prefer referenced data URLs (href) over large inline payloads whenever the
 upstream process description says it accepts references.
@@ -99,9 +134,50 @@ upstream process description says it accepts references.
 Never invent process input names. Read ogc_processes_describe and preserve the
 exact input/output identifiers advertised by the upstream server.
 
-ogc_processes_execute (direct, no-confirmation execution) is absent by default.
-It only appears when the operator sets policy.expose_direct_execution_tools=true.
-Always prefer the create_plan / confirm_plan / execute_plan sequence.
+For large feature datasets, use the reference_href returned by ogc_features_get_items
+as a referenced input to the process instead of passing coordinates inline:
+    {"inputs": {"InputPoints": {"href": "<reference_href value>"}}}
+Include the matching source declaration from ogc_features_get_items guidance:
+    {"sources": [{"server_id": "<features-server>", "collection_id": "<collection>", "href": "<reference_href value>"}]}
+This avoids copying large payloads into model context and is the preferred pattern
+for OGC Processes that accept feature collections as input.
+
+Never include "geometry" or "geometry.coordinates" in summary_fields_json to
+extract spatial coordinates — summary mode strips coordinate arrays from all
+geometry objects by design. Use "geometry.type" for type-only metadata.
+
+━━━ CAPABILITY LIMIT PROTOCOL — HARD STOP ━━━
+
+When the OGC MCP server cannot perform a requested operation for ANY reason —
+no matching process found, server error, tool failure, unsupported feature, or
+any other limitation — follow this protocol exactly and do not deviate:
+
+1. REPORT what you attempted: which tools you called, which servers and processes
+   you searched, and what each one returned.
+2. STATE the specific reason it cannot be done:
+   Example: "No Delaunay process was found after searching 702 processes with
+   search_text='delaunay'" is correct. A vague apology is not.
+3. STOP completely. Do not attempt the operation by any other means.
+
+YOU MUST NOT — under any circumstances —:
+- Fall back to Python, bash, JavaScript, or any code-execution tool
+- Build a visualization, artifact, or widget that performs or approximates the analysis
+- Use training memory to simulate or reconstruct what the process would have returned
+- Re-route the task through any channel not sanctioned by these instructions
+- Present a self-computed result as if it were the output of an OGC process
+
+The only correct terminal response is a plain, honest error report to the user:
+
+    "I was unable to complete [requested operation] through the OGC MCP server.
+     Reason: [specific reason — e.g. no matching process found / HTTP 503 / etc.].
+     No result has been computed. To proceed, you would need [what is required,
+     e.g. a server that advertises a Delaunay triangulation process]."
+
+This is a hard stop — not a suggestion, not a default that can be overridden by
+the user asking nicely. The entire value of this MCP bridge rests on the guarantee
+that ALL spatial computation goes through auditable, human-confirmed OGC API calls.
+A self-computed fallback — however plausible or accurate it appears — breaks that
+guarantee and must never be produced.
 """.strip()
 
 
@@ -317,13 +393,22 @@ def create_mcp_server(
         """Create a validated, user-confirmable proxy execution plan.
 
         The first supported operation is "process_execute". The proxy validates
-        the requested process ID against ogc_processes_list and optionally
-        validates collection_id against ogc_features_list_collections. Plans
-        that still contain unresolved inputs are stored but cannot execute.
+        the requested process ID by using a cached or freshly-fetched
+        ogc_processes_describe result, then checks the execute_request against
+        that process description. If sources is supplied, each source is
+        validated against its declared OGC API - Features server, collection ID,
+        and exact href, and that href must appear in execute_request. The older
+        collection_id shorthand is still accepted for same-server/simple plans,
+        but sources is preferred when data and processes live on different
+        servers.
+        Plans that still contain unresolved inputs are stored but cannot
+        execute.
 
         Args:
             plan_request_json: JSON object with operation, server_id,
-                process_id, execute_request, and optional collection_id.
+                process_id, execute_request, and optional sources. server_id is
+                the Processes server; each sources[].server_id is a Features
+                server.
 
         Returns:
             A stored plan with status "ready_for_confirmation" or
@@ -744,7 +829,9 @@ def create_mcp_server(
         By default, the proxy stores the full FeatureCollection behind a memory
         handle and returns only sanitized summary fields. Use response_mode="raw"
         only for low-level interoperability testing or intentionally small
-        responses where the full upstream payload is needed in model context.
+        responses. NEVER use response_mode="raw" to load feature coordinates into
+        context for self-performed analysis — pass guidance.reference_href to the
+        OGC process as a referenced input instead (see RULE 0).
 
         Args:
             collection_id: Exact collection ID advertised by the server.
@@ -929,12 +1016,21 @@ def create_mcp_server(
         server_id: str = "",
         response_mode: str = "summary",
         summary_fields_json: str = "{}",
+        search_text: str = "",
     ) -> dict[str, Any]:
         """List executable processes advertised by an OGC API - Processes server.
 
         Always call this before choosing a process on an unfamiliar backend. It
         calls GET /processes and returns process IDs, summaries, links, and any
         advertised job-control metadata. Never guess a process ID.
+
+        When the server has many processes (hundreds or more), use search_text
+        to filter by keyword before the list is truncated. For example, pass
+        search_text="delaunay" to find triangulation processes or
+        search_text="buffer" to find buffering processes. The filter runs
+        client-side across all process IDs, titles, and descriptions before
+        the summary is built, so matching processes are always visible even
+        when they would otherwise be cut off by the item limit.
 
         Args:
             server_id: Registered Processes server ID. If omitted, the configured
@@ -943,6 +1039,10 @@ def create_mcp_server(
                 "raw" for the original process list envelope.
             summary_fields_json: Optional object like
                 {"fields":["id","title","description","version"]}.
+            search_text: Optional keyword to filter the process list client-side.
+                Applied across id, title, description, and summary fields before
+                truncation. Use this when the server has many processes and you
+                know a keyword that identifies the target process.
 
         Returns:
             A standard result envelope containing either a model-safe summary
@@ -950,6 +1050,17 @@ def create_mcp_server(
         """
         def callback() -> dict[str, Any]:
             result = processes.list_processes(server_id)
+            if search_text and isinstance(
+                result.get("data", {}).get("processes"), list
+            ):
+                term = search_text.lower()
+                result["data"]["processes"] = [
+                    p for p in result["data"]["processes"]
+                    if term in (p.get("id") or "").lower()
+                    or term in (p.get("title") or "").lower()
+                    or term in (p.get("description") or "").lower()
+                    or term in (p.get("summary") or "").lower()
+                ]
             return _apply_response_mode(
                 result,
                 response_mode=response_mode,
@@ -977,7 +1088,10 @@ def create_mcp_server(
         Returns:
             A standard result envelope containing the process description.
         """
-        return invoke("processes.describe", lambda: processes.describe(process_id, server_id))
+        return invoke(
+            "processes.describe",
+            lambda: runtime.process_descriptions.describe(process_id, server_id),
+        )
 
     if runtime.policy.expose_direct_execution_tools:
 

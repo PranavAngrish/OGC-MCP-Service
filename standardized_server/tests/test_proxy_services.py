@@ -7,16 +7,50 @@ from unittest.mock import patch
 
 import httpx
 
+from ogc_mcp_reference.config import parse_settings
 from ogc_mcp_reference.modules import FeaturesService, ProcessesService
 from ogc_mcp_reference.errors import OgcMcpError
+from ogc_mcp_reference.registry import ServerRegistry
 from ogc_mcp_reference.services.capabilities import CapabilityCache
 from ogc_mcp_reference.services.fallback import FallbackEngine
 from ogc_mcp_reference.services.planner import ProxyPlanner
+from ogc_mcp_reference.services.process_descriptions import ProcessDescriptionCache
 from ogc_mcp_reference.services.sanitization import ResponseSanitizer
 from ogc_mcp_reference.services.store import InMemoryStore
 from ogc_mcp_reference.transport import OgcHttpClient
 from ogc_mcp_reference.workflows import PlanningWorkflow
 from helpers import build_registry
+
+
+def build_split_registry() -> ServerRegistry:
+    return ServerRegistry(
+        parse_settings(
+            {
+                "default_servers": {
+                    "common": "process-server",
+                    "features": "features-server",
+                    "records": "features-server",
+                    "processes": "process-server",
+                },
+                "servers": [
+                    {
+                        "id": "process-server",
+                        "title": "Process API",
+                        "base_url": "https://process.example.test",
+                        "services": ["common", "processes"],
+                        "defaults": {"records_collection": "metadata"},
+                    },
+                    {
+                        "id": "features-server",
+                        "title": "Features API",
+                        "base_url": "https://features.example.test",
+                        "services": ["common", "features", "records"],
+                        "defaults": {"records_collection": "metadata"},
+                    },
+                ],
+            }
+        )
+    )
 
 
 class ProxyServiceTests(unittest.TestCase):
@@ -111,8 +145,14 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertEqual(items[1]["properties.name"], "Riverside")
 
     def test_planner_rejects_unadvertised_process_id(self) -> None:
+        calls: list[tuple[str, str]] = []
+
         def handler(request: httpx.Request) -> httpx.Response:
-            self.assertEqual(request.url.path, "/processes")
+            calls.append((request.method, request.url.path))
+            if request.url.path == "/processes/interpolation":
+                return httpx.Response(404, json={"detail": "missing"})
+            if request.url.path == "/processes":
+                return httpx.Response(200, json={"processes": [{"id": "Delaunay"}]})
             return httpx.Response(200, json={"processes": [{"id": "Delaunay"}]})
 
         registry = build_registry()
@@ -133,6 +173,16 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertEqual(plan.status, "needs_resolution")
         self.assertEqual(plan.unresolved[0]["field"], "process_id")
         self.assertEqual(plan.unresolved[0]["available"], ["Delaunay"])
+        updated = planner.update_plan(plan.plan_id, {"inputs": {}})
+        self.assertEqual(updated.status, "needs_resolution")
+        self.assertEqual(updated.unresolved[0]["field"], "process_id")
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/processes/interpolation"),
+                ("GET", "/processes"),
+            ],
+        )
 
     def test_planner_executes_validated_process_plan(self) -> None:
         calls: list[tuple[str, str]] = []
@@ -175,10 +225,320 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("GET", "/processes"),
                 ("GET", "/processes/Delaunay"),
                 ("POST", "/processes/Delaunay/execution"),
             ],
+        )
+
+    def test_planner_reuses_cached_process_description(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.method, request.url.path))
+            if request.url.path == "/processes/Delaunay" and request.method == "GET":
+                return httpx.Response(200, json={"id": "Delaunay", "inputs": {}})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        processes = ProcessesService(registry, client)
+        descriptions = ProcessDescriptionCache(processes)
+        descriptions.describe("Delaunay")
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=processes,
+            process_descriptions=descriptions,
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Delaunay",
+                "execute_request": {"inputs": {}},
+            }
+        )
+
+        self.assertEqual(plan.status, "ready_for_confirmation")
+        self.assertEqual(calls, [("GET", "/processes/Delaunay")])
+
+    def test_planner_requires_collection_id_to_match_execute_href(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Buffer" and request.method == "GET":
+                return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Buffer",
+                "collection_id": "roads",
+                "execute_request": {
+                    "inputs": {
+                        "InputFeatures": {
+                            "href": "https://ogc.example.test/collections/buildings/items?f=json"
+                        }
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["field"], "collection_id")
+
+    def test_planner_records_collection_reference_when_href_matches(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Buffer" and request.method == "GET":
+                return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.path == "/collections":
+                return httpx.Response(200, json={"collections": [{"id": "roads"}]})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Buffer",
+                "collection_id": "roads",
+                "execute_request": {
+                    "inputs": {
+                        "InputFeatures": {
+                            "href": "https://ogc.example.test/collections/roads/items?f=json"
+                        }
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(plan.status, "ready_for_confirmation")
+        self.assertEqual(plan.steps[0]["kind"], "collection_reference")
+        self.assertEqual(plan.steps[0]["collection_id"], "roads")
+        self.assertEqual(
+            plan.steps[0]["hrefs"],
+            ["https://ogc.example.test/collections/roads/items?f=json"],
+        )
+
+    def test_planner_validates_source_from_different_features_server(self) -> None:
+        calls: list[tuple[str, str, str]] = []
+        href = "https://features.example.test/collections/roads/items?f=json&limit=10"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.url.host or "", request.method, request.url.path))
+            if request.url.host == "process.example.test":
+                if request.url.path == "/processes/Buffer" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.host == "features.example.test":
+                if request.url.path == "/collections/roads" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "roads", "title": "Roads"})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_split_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "server_id": "process-server",
+                "process_id": "Buffer",
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "roads",
+                        "href": href,
+                        "input_id": "InputFeatures",
+                    }
+                ],
+                "execute_request": {
+                    "inputs": {
+                        "InputFeatures": {
+                            "href": href,
+                        }
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(plan.status, "ready_for_confirmation")
+        self.assertEqual(plan.sources[0]["server_id"], "features-server")
+        self.assertEqual(plan.sources[0]["href"], href)
+        self.assertEqual(plan.steps[0]["kind"], "collection_reference")
+        self.assertEqual(plan.steps[0]["server_id"], "features-server")
+        self.assertEqual(plan.steps[0]["collection_id"], "roads")
+        self.assertEqual(plan.steps[0]["hrefs"], [href])
+        self.assertEqual(
+            calls,
+            [
+                ("process.example.test", "GET", "/processes/Buffer"),
+                ("features.example.test", "GET", "/collections/roads"),
+            ],
+        )
+
+    def test_planner_rejects_source_href_outside_declared_features_server(self) -> None:
+        href = "https://other.example.test/collections/roads/items?f=json"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "process.example.test":
+                if request.url.path == "/processes/Buffer" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.host == "features.example.test":
+                if request.url.path == "/collections/roads" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "roads", "title": "Roads"})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_split_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "server_id": "process-server",
+                "process_id": "Buffer",
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "roads",
+                        "href": href,
+                    }
+                ],
+                "execute_request": {"inputs": {"InputFeatures": {"href": href}}},
+            }
+        )
+
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["field"], "sources[0].href")
+        self.assertIn("base_url", plan.unresolved[0])
+
+    def test_planner_rejects_source_collection_missing_from_features_server(self) -> None:
+        href = "https://features.example.test/collections/roads/items?f=json"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "process.example.test":
+                if request.url.path == "/processes/Buffer" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.host == "features.example.test":
+                if request.url.path == "/collections/roads" and request.method == "GET":
+                    return httpx.Response(404, json={"detail": "missing"})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_split_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "server_id": "process-server",
+                "process_id": "Buffer",
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "roads",
+                        "href": href,
+                    }
+                ],
+                "execute_request": {"inputs": {"InputFeatures": {"href": href}}},
+            }
+        )
+
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["field"], "sources[0].collection_id")
+        self.assertEqual(plan.unresolved[0]["server_id"], "features-server")
+
+    def test_update_plan_revalidates_declared_sources_against_execute_request(self) -> None:
+        href = "https://features.example.test/collections/roads/items?f=json"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "process.example.test":
+                if request.url.path == "/processes/Buffer" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.host == "features.example.test":
+                if request.url.path == "/collections/roads" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "roads", "title": "Roads"})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_split_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "server_id": "process-server",
+                "process_id": "Buffer",
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "roads",
+                        "href": href,
+                    }
+                ],
+                "execute_request": {"inputs": {"InputFeatures": {}}},
+            }
+        )
+        updated = planner.update_plan(
+            plan.plan_id,
+            {"inputs": {"InputFeatures": {"href": href}}},
+        )
+
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["field"], "execute_request.href")
+        self.assertEqual(updated.status, "ready_for_confirmation")
+        self.assertEqual(updated.steps[0]["kind"], "collection_reference")
+        self.assertEqual(updated.steps[0]["hrefs"], [href])
+
+    def test_features_reference_href_preserves_query_parameters(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/collections/roads/items":
+                return httpx.Response(200, json={"type": "FeatureCollection", "features": []})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        service = FeaturesService(
+            build_registry(),
+            OgcHttpClient(transport=httpx.MockTransport(handler)),
+        )
+
+        result = service.get_items(
+            "roads",
+            query={"bbox": "1,2,3,4", "limit": 10},
+        )
+
+        self.assertEqual(
+            result["guidance"]["reference_href"],
+            "https://ogc.example.test/collections/roads/items?f=json&bbox=1%2C2%2C3%2C4&limit=10",
+        )
+        self.assertEqual(
+            result["guidance"]["source"],
+            {
+                "server_id": "test",
+                "collection_id": "roads",
+                "href": "https://ogc.example.test/collections/roads/items?f=json&bbox=1%2C2%2C3%2C4&limit=10",
+            },
         )
 
     def test_planner_flags_missing_required_process_input(self) -> None:
@@ -425,7 +785,6 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("GET", "/processes"),
                 ("GET", "/processes/Delaunay"),
                 ("GET", "/conformance"),
                 ("POST", "/processes/Delaunay/execution"),

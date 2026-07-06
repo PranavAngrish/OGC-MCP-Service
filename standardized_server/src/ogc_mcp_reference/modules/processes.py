@@ -50,7 +50,15 @@ class ProcessesService:
             "processes.list",
             server,
             response,
-            guidance={"next_tools": ["ogc_processes_describe"]},
+            guidance={
+                "next_tools": ["ogc_processes_describe"],
+                "search_hint": (
+                    "If this list is truncated and you need a specific process, "
+                    "retry ogc_processes_list with search_text=\"<keyword>\" "
+                    "(e.g. search_text=\"delaunay\") to filter the full list "
+                    "client-side before the item limit is applied."
+                ),
+            },
         )
 
     def describe(self, process_id: str, server_id: str = "") -> dict[str, Any]:
@@ -62,8 +70,13 @@ class ProcessesService:
             server,
             response,
             guidance={
-                "next_tools": ["ogc_processes_execute"],
-                "usage": "Use the exact advertised input/output identifiers when building execute_request_json.",
+                "next_tools": ["ogc_proxy_create_plan"],
+                "usage": (
+                    "Use the exact advertised input/output identifiers when building the execute_request. "
+                    "Never invent or normalize field names. "
+                    "Create a proxy plan with ogc_proxy_create_plan — "
+                    "do NOT run local computation instead."
+                ),
             },
         )
 
