@@ -1,8 +1,7 @@
 # Experimental Conformance Checklist
 
-This checklist describes the behavior expected from implementations of the
-experimental OGC API MCP tool contract in `spec/ogc-mcp-tool-contract.json`.
-It is not an OGC conformance class.
+This checklist describes behavior expected from implementations of the
+experimental OGC API MCP tool contract. It is not an OGC conformance class.
 
 ## Registry
 
@@ -10,6 +9,7 @@ It is not an OGC conformance class.
 - [ ] MCP callers cannot send arbitrary upstream base URLs.
 - [ ] Server metadata responses omit credentials and secret values.
 - [ ] Module defaults are explicit and operator-configured.
+- [ ] Disabled servers are not callable.
 
 ## Security
 
@@ -17,22 +17,18 @@ It is not an OGC conformance class.
 - [ ] Generic paths are relative and reject absolute URLs.
 - [ ] Credentials are injected outside model-visible arguments.
 - [ ] Process execution references are validated recursively.
-- [ ] Private network access is disabled by default.
-- [ ] Redirects are not followed without validation.
+- [ ] Private and loopback access is disabled by default.
+- [ ] Embedded credentials in URLs are rejected.
+- [ ] Redirects are not followed automatically.
 - [ ] Response sizes and request durations are bounded.
-- [ ] Infrastructure-level egress restrictions are recommended for production.
-- [ ] Unmediated direct process execution (no human-confirmation gate) is not
-      registered as a tool at all unless the operator explicitly opts in via
-      `policy.expose_direct_execution_tools`; the model cannot discover or
-      call a tool that was never registered.
-- [ ] Job cancellation/dismissal remains available without the confirmation
-      gate, since it is lower-risk and more reversible than starting a new
-      execution.
+- [ ] Direct process execution is not registered unless the operator opts in.
+- [ ] Job dismissal remains available even when direct execution is disabled.
+- [ ] Production deployments document external egress restrictions.
 
-## Results
+## Result Envelopes
 
 - [ ] Every success contains `ok`, `operation`, `server`, `request`, `response`,
-      and `data`.
+      and `data` where applicable.
 - [ ] Every expected failure contains `ok=false`, `operation`, and `error`.
 - [ ] Error responses use stable machine-readable codes.
 - [ ] Upstream payloads are preserved unless a documented transformation exists.
@@ -43,41 +39,32 @@ It is not an OGC conformance class.
 - [ ] Missing capabilities map to deterministic fallback rules.
 - [ ] Full upstream payloads can be stored behind opaque proxy memory handles.
 - [ ] Model-facing summaries extract allowlisted fields only.
-- [ ] Instruction-like values in upstream data are sanitized before model use.
-- [ ] Tools that can return large or unbounded upstream payloads (feature
-      items, job results, plan execution, and direct execution when enabled)
-      default to `response_mode="summary"`; `response_mode="raw"` is opt-in.
-- [ ] Execution plans validate process and collection IDs before execution.
-- [ ] Execution plans perform a best-effort, conservative check of
-      `execute_request` inputs against the process's declared input schema
-      (required-but-missing inputs and simple literal type mismatches), and
-      append any issue found to the plan's unresolved list rather than
-      silently accepting a malformed request.
-- [ ] Input-schema validation fails open (skips the extra check rather than
-      blocking plan creation) when the process description cannot be
-      fetched, and intentionally skips reference-form inputs,
-      multi-occurrence inputs, and union (`oneOf`/`anyOf`/`allOf`/`$ref`)
-      schemas to avoid false positives.
-- [ ] Plan creation returns a user-confirmable workflow state.
-- [ ] Plan execution accepts stored `plan_id` values, not arbitrary destinations.
-- [ ] Plan execution is blocked until explicit human approval is recorded.
-- [ ] Rejected or unresolved plans cannot execute.
-- [ ] Workflow orchestration can run through LangGraph or an equivalent
-      deterministic state-machine backend.
-- [ ] Plan and proxy-memory state is stored through a pluggable backend so
-      a multi-worker or multi-replica deployment can share consistent state
-      (for example, a confirm call routed to a different worker than the one
-      that created the plan still resolves correctly).
-- [ ] The default storage backend is documented as process-local and
-      single-worker-only; deployments running more than one worker process
-      or replica must configure an external backend.
-- [ ] Stored plans and proxy-memory records expire after a configurable TTL
-      (zero disables expiry).
+- [ ] Instruction-like upstream values are sanitized before model use.
+- [ ] Large or unbounded tools default to `response_mode="summary"`.
+- [ ] Raw mode is opt-in.
+- [ ] Plan and memory records expire after configurable TTLs.
+- [ ] A TTL of `0` disables expiry.
+- [ ] Multi-worker deployments can use a shared external store.
+
+## Human-Confirmed Process Execution
+
+- [ ] Process execution plans validate process IDs before execution.
+- [ ] Plans validate declared source hrefs against source metadata.
+- [ ] Plans perform conservative execute-input validation.
+- [ ] Plans with unresolved inputs cannot be approved.
+- [ ] Plans cannot execute without explicit human approval.
+- [ ] Rejected, unresolved, running, completed, or failed plans cannot be
+      approved.
+- [ ] `ogc_proxy_update_plan` can correct execute inputs without changing the
+      plan ID.
+- [ ] `ogc_proxy_execute_plan` accepts a stored `plan_id`, not arbitrary process
+      inputs.
+- [ ] Confirmation prompts expose the exact `execute_request` for review.
 
 ## OGC API - Common
 
 - [ ] Landing page retrieval is supported.
-- [ ] Conformance declaration retrieval is supported.
+- [ ] Conformance retrieval is supported.
 - [ ] Safe read-only relative resource access is supported.
 
 ## OGC API - Features
@@ -86,6 +73,7 @@ It is not an OGC conformance class.
 - [ ] Collection metadata retrieval is supported.
 - [ ] Feature item listing is supported.
 - [ ] Single feature retrieval is supported.
+- [ ] Feature item listing provides a reference href suitable for process input.
 
 ## OGC API - Records
 
@@ -96,8 +84,15 @@ It is not an OGC conformance class.
 ## OGC API - Processes
 
 - [ ] Process listing is supported.
-- [ ] Process description retrieval is supported.
-- [ ] Execute requests preserve advertised input/output names.
+- [ ] Process descriptions are supported.
+- [ ] Execute requests preserve advertised input and output names.
 - [ ] Inline and referenced process inputs are supported.
 - [ ] `Prefer: respond-async` can be requested.
 - [ ] Job listing, status, results, and dismissal are supported.
+
+## Documentation
+
+- [ ] The implementation documents configuration.
+- [ ] The implementation documents security boundaries.
+- [ ] The implementation documents the plan lifecycle.
+- [ ] The implementation documents development and testing workflows.

@@ -2,278 +2,158 @@
 
 ## Status
 
-This project is an experimental MCP reference implementation for OGC APIs. It is
-intended to support design review and interoperability testing. It is not an
-adopted OGC Standard and should not be represented as one.
+The reference server is an experimental MCP implementation for OGC APIs. It is
+intended for design review, research, and interoperability testing. It should not
+be represented as an adopted OGC Standard.
 
-## Design Principles
+## System Boundary
 
-### Stable MCP Contract
-
-The public surface is a small set of stable `ogc_*` tools. Tool names describe
-OGC concepts rather than implementation brands. AI clients can use the same tool
-workflow against GeoLabs, CubeWerx, pygeoapi, pycsw, or another registered
-deployment.
-
-### OGC Discovery First
-
-Clients should discover capabilities before acting:
+The server sits between MCP clients and operator-approved OGC API deployments.
 
 ```text
-ogc_servers_list
-  -> ogc_common_get_landing_page
-  -> ogc_common_get_conformance
-  -> ogc_processes_list
-  -> ogc_processes_describe
-  -> ogc_proxy_create_plan
-  -> human reviews confirmation_prompt
-  -> ogc_proxy_confirm_plan
-  -> ogc_proxy_execute_plan
+MCP client
+  -> FastMCP tool call
+  -> OGC MCP reference server
+  -> registered OGC API deployment
 ```
 
-Process identifiers and schemas are server-owned. The MCP layer must not invent
-or silently normalize them.
+The MCP client never supplies arbitrary upstream base URLs or credentials.
+Operators define servers, services, auth profiles, security policy, and limits
+in a JSON configuration file.
 
-### Stateful Proxy Runtime
+## Runtime Composition
 
-The `ogc_proxy_*` tools are the recommended production-style workflow. They keep
-full payloads in proxy memory, return compact sanitized summaries to the model,
-validate advertised process and collection identifiers (and, on a best-effort
-basis, the declared input schema) before execution, and choose deterministic
-fallbacks from cached conformance facts.
+[`src/ogc_mcp_reference/runtime.py`](../src/ogc_mcp_reference/runtime.py) builds
+one `ProxyRuntime` object that wires together:
 
-`ogc_processes_execute` -- the unmediated, no-confirmation-gate execution tool
--- is not part of the default tool surface at all. It is only registered when
-the operator sets `policy.expose_direct_execution_tools=true` in the server
-configuration. This is enforced structurally: the `@mcp.tool()` registration
-itself is skipped, so a disabled tool cannot be discovered or called by the
-model, not merely refused at call time. `ogc_jobs_dismiss` (cancelling a job)
-is intentionally left ungated in both configurations, since cancelling
-in-flight work is lower-risk and more reversible than starting a new
-execution, and a multi-step confirmation flow would be poor UX for an
-emergency-stop action.
+- `ServerRegistry` for registered server lookup;
+- `OgcHttpClient` for bounded HTTP requests and auth injection;
+- OGC module services for Common, Features, Records, and Processes;
+- capability and fallback services;
+- proxy memory storage and response sanitization;
+- process description cache;
+- proxy planner;
+- LangGraph-ready planning workflow;
+- operator policy settings.
 
-The proxy workflow layer is LangGraph-ready. When LangGraph is installed, the
-planning workflow is compiled as a state graph; when it is not installed, the
-same deterministic node methods run locally. In both cases, execution is blocked
-until a plan reaches the explicit `confirmed` lifecycle state.
-
-### Plan and Proxy-Memory Persistence
-
-`ProxyPlanner` and `ProxyMemoryStore` persist their state through a pluggable
-`KeyValueStore` (see `services/store.py`) rather than an in-process dict:
-
-- `backend="memory"` (default): process-local, zero configuration, correct for
-  a single-worker `stdio` deployment. State is invisible to any other worker,
-  replica, or process restart -- a plan created on one process cannot be
-  confirmed or executed from another.
-- `backend="redis"`: required once a `streamable-http` deployment runs more
-  than one worker process or replica behind a load balancer, so a
-  `ogc_proxy_confirm_plan` call routed to a different worker than the one that
-  ran `ogc_proxy_create_plan` still resolves the same plan. Requires the
-  optional `redis` extra and an environment variable (named by
-  `store.redis_url_env`) holding the connection URL; the URL itself is never a
-  tool argument or model-visible value, consistent with how upstream OGC API
-  credentials are handled.
-
-Plans and proxy-memory records expire after a configurable TTL (defaults:
-`plan_ttl_seconds=3600`, `memory_ttl_seconds=1800`; `0` disables expiry) so
-abandoned, never-confirmed plans and unused memory handles do not accumulate
-forever in a long-running process or shared store.
-
-### Execute-Input Schema Validation
-
-`ogc_proxy_create_plan` fetches the target process's description and runs
-`execute_request` through `services/input_schema.py` before the plan is
-considered `ready_for_confirmation`. This is intentionally conservative rather
-than a full JSON Schema validator: OGC process input schemas frequently
-express a literal-value-or-href-reference union, or accept multiple
-occurrences of an input, shapes that are easy to mis-validate. The checker
-only flags two high-confidence problems -- a required input missing entirely,
-or a literal value whose JSON type plainly conflicts with a simple declared
-schema type -- and otherwise skips rather than risks blocking a legitimate
-call with a false positive. Any flagged issue is appended to the plan's
-`unresolved` list using the same mechanism as the existing process/collection
-ID checks, which naturally keeps the plan at `needs_resolution` until the
-caller supplies a corrected `execute_request`.
-
-### Operator-Owned Registry
-
-The model chooses from registered `server_id` values. It cannot provide an
-arbitrary destination URL for MCP-originated HTTP requests. This boundary:
-
-- reduces SSRF exposure;
-- keeps server onboarding auditable;
-- supports deployment-specific auth;
-- makes defaults explicit;
-- allows profile-specific timeouts and response limits.
-
-### Credentials Stay Outside Model Context
-
-Profiles refer to environment-variable names. The transport layer injects
-credentials immediately before sending a request. Credentials never appear in
-MCP tool schemas, tool responses, or model prompts. The Redis connection URL
-used by the plan/memory store backend follows the same pattern.
-
-### Structured Envelopes
-
-Every OGC operation returns:
-
-```json
-{
-  "ok": true,
-  "operation": "processes.describe",
-  "server": {
-    "id": "geolabs",
-    "title": "GeoLabs OGC API - Processes",
-    "base_url": "http://tb17.geolabs.fr:8119/ogc-api"
-  },
-  "request": {
-    "method": "GET",
-    "path": "/processes/Delaunay"
-  },
-  "response": {
-    "status_code": 200,
-    "content_type": "application/json"
-  },
-  "data": {}
-}
-```
-
-Failures return:
-
-```json
-{
-  "ok": false,
-  "operation": "processes.execute",
-  "error": {
-    "code": "security_policy_error",
-    "message": "Process input reference host is not operator-approved.",
-    "details": {}
-  }
-}
-```
-
-Tools that can return a large or unbounded upstream payload
-(`ogc_features_get_items`, `ogc_jobs_get_results`, `ogc_proxy_execute_plan`,
-and `ogc_processes_execute` when enabled) default to `response_mode="summary"`:
-`data` becomes a sanitized summary and a `memory` field carries an opaque
-handle resolving the full payload via `ogc_proxy_memory_list` /
-`ProxyMemoryStore`. `response_mode="raw"` returns the original upstream
-payload unchanged.
-
-### Bounded Network Access
-
-The transport layer:
-
-- rejects absolute URLs in generic path tools;
-- blocks private/loopback base URLs unless explicitly allowed;
-- validates process-input references;
-- blocks referenced inputs until the operator configures allowed hosts or
-  explicitly permits unlisted public hosts;
-- does not automatically follow redirects;
-- limits response bytes;
-- enforces timeouts;
-- catches upstream errors as structured MCP output.
-
-These checks complement infrastructure-level egress restrictions.
+`app.py` then registers FastMCP resources and tools using that runtime.
 
 ## Package Boundaries
 
 ```text
 src/ogc_mcp_reference/
-├── app.py          FastMCP tools, resources, and response-mode wiring
-├── config.py       JSON configuration loading
-├── models.py       Typed immutable configuration models
-├── runtime.py      Service composition root
-├── registry.py     Registered server resolution
-├── security.py     URL and reference validation
-├── transport.py    Auth injection and bounded HTTP
-├── result.py       Stable success/error envelopes
-├── services/       Stateful proxy services
-│   ├── auth.py
-│   ├── capabilities.py
-│   ├── fallback.py
-│   ├── input_schema.py   Conservative execute-input schema checks
-│   ├── memory.py
-│   ├── planner.py
-│   ├── sanitization.py
-│   └── store.py           Pluggable KeyValueStore (memory / redis)
-├── workflows/      LangGraph-ready workflow orchestration
-│   ├── planning.py
-│   └── state.py
-└── modules/
-    ├── common.py
-    ├── features.py
-    ├── records.py
-    └── processes.py
+|-- app.py              FastMCP resources, tools, instructions, response modes
+|-- __main__.py         CLI entry point
+|-- config.py           JSON configuration parsing
+|-- models.py           typed dataclass models
+|-- registry.py         server resolution and service checks
+|-- security.py         URL, path, and execute-reference validation
+|-- transport.py        bounded HTTP client and auth headers
+|-- result.py           success/error envelopes
+|-- errors.py           stable error types
+|-- modules/            OGC API module operations
+|-- services/           proxy services and stateful support
+`-- workflows/          plan workflow orchestration
 ```
 
-OGC module classes do not know about MCP. They can be tested independently and
-reused by another MCP SDK or language implementation.
+The `modules/` layer does not know about MCP. It builds OGC HTTP requests and
+returns structured envelopes. The MCP-specific behavior, including response
+summary mode, lives at the tool boundary in `app.py`.
 
-Proxy services sit between the MCP tool surface and OGC modules. They are where
-deterministic production behavior belongs: token refresh, conformance-derived
-capabilities, fallback selection, full-response memory handles, sanitized
-summaries, plan validation (including input-schema checks) before execution,
-and pluggable persistence for plan/memory state.
+## Tool Surface
 
-`response_mode`/memory-handle wrapping is intentionally implemented only in
-`app.py`'s tool callbacks (via the shared `_apply_response_mode` helper), not
-inside `services/planner.py` or `workflows/planning.py`. Those lower layers
-keep returning the full, unwrapped result so they stay simple to test and
-reusable outside an MCP-specific context; summarization is a model-context
-concern that belongs at the MCP tool boundary, the same way
-`ogc_features_get_items` has always wrapped `FeaturesService.get_items()`.
+The public MCP surface uses stable names with the `ogc_` prefix:
 
-## UML Diagrams
+- registry tools: `ogc_servers_list`;
+- proxy tools: `ogc_proxy_*`;
+- Common tools: `ogc_common_*`;
+- Features tools: `ogc_features_*`;
+- Records tools: `ogc_records_*`;
+- Processes and Jobs tools: `ogc_processes_*`, `ogc_jobs_*`.
 
-PlantUML source files under [`docs/uml/`](uml/README.md) document the system
-boundary, internal class relationships, and process-execution sequence.
+The contract is documented in [Tool Contract](TOOL_CONTRACT.md) and represented
+as JSON in [`../spec/ogc-mcp-tool-contract.json`](../spec/ogc-mcp-tool-contract.json).
 
-## Extension Strategy
+## Human-Confirmed Process Execution
 
-Add a dedicated module when a read-only generic path is no longer sufficient:
+The default process workflow is intentionally stateful:
 
-1. Define stable operations in `spec/ogc-mcp-tool-contract.json`.
-2. Add service methods under `modules/`.
-3. Register detailed MCP tools in `app.py`.
-4. Add configuration paths/defaults only where necessary.
-5. Add deterministic tests.
-6. Document conformance expectations.
+```text
+discover process
+  -> describe exact process schema
+  -> create proxy plan
+  -> resolve missing or invalid inputs
+  -> show execute_request verbatim to user
+  -> record approval
+  -> execute stored plan
+```
 
-Candidate modules:
+`ogc_processes_execute`, the unmediated direct execution tool, is not registered
+unless `policy.expose_direct_execution_tools` is set to `true`. This is a
+structural gate: when disabled, the model cannot discover or call the tool.
 
-- OGC API - EDR
-- OGC API - Coverages
-- OGC API - Tiles
-- OGC API - Maps
-- OGC API - Styles
+## Response Summary Mode
 
-## Deployment
+Tools that can return large payloads default to `response_mode="summary"`.
 
-Use `stdio` for local desktop clients; the default `store.backend="memory"`
-is correct here since there is exactly one worker process per user. Use
-Streamable HTTP for deployed MCP services:
+In summary mode:
 
-- A single-worker Streamable HTTP deployment can still use the default
-  in-process store.
-- A multi-worker or multi-replica Streamable HTTP deployment (anything behind
-  a load balancer that may route a confirm/execute call to a different
-  process than the one that created the plan) must set `store.backend="redis"`
-  and provide a connection URL via the environment variable named in
-  `store.redis_url_env`.
+1. the full upstream payload is stored in proxy memory;
+2. a compact sanitized summary replaces `data`;
+3. the response includes a memory handle;
+4. callers can page through the full payload with `ogc_proxy_memory_retrieve`.
 
-Production deployments should also add:
+Raw mode is available for low-level testing and intentionally small payloads,
+but it should not be used as a way to load feature coordinates into model
+context for model-side spatial analysis.
 
-- TLS termination;
-- MCP-layer authorization;
-- network egress restrictions;
-- observability and audit logging;
-- secret management;
-- rate limiting;
-- deployment-specific data governance.
+## State Storage
 
-Multi-tenant request isolation (for example, scoping `ogc_proxy_memory_list`
-and plan visibility per session/user rather than per deployment) is a known
-gap tracked for future work and is not yet implemented.
+Plans and memory records use the pluggable `KeyValueStore` interface in
+`services/store.py`.
+
+- `memory`: process-local, zero setup, suitable for single-worker stdio.
+- `redis`: external state store, required for multi-worker or multi-replica
+  Streamable HTTP deployments where calls may be routed to different workers.
+
+Plans and memory records have configurable TTLs. A TTL of `0` disables expiry.
+
+## Capability Discovery And Fallbacks
+
+`CapabilityCache` loads `/conformance` and normalizes selected flags such as
+async support, CQL2, CRS negotiation, temporal filtering, and property
+selection.
+
+`FallbackEngine` reports deterministic fallback rules for missing capabilities.
+The workflow currently applies the async fallback by selecting `auto` when an
+async request targets a server without async/job capability. Other advertised
+fallback rules describe policy intent and must not be treated as implemented
+geospatial computation unless support is added explicitly.
+
+## Security Boundaries
+
+The server enforces:
+
+- registered upstream deployments only;
+- relative paths for generic reads;
+- no embedded credentials in configured URLs;
+- environment-based credential injection;
+- private and loopback base URL blocking by default;
+- execute-reference host allowlists;
+- no automatic redirect following;
+- response byte limits;
+- request timeouts;
+- structured error envelopes.
+
+Application checks should be combined with infrastructure egress controls in
+production.
+
+## Known Gaps
+
+- Plan and memory visibility is deployment-wide, not scoped per user/session.
+- DNS names that resolve to private addresses require infrastructure-level
+  egress controls or future DNS-aware validation.
+- The conservative input-schema checker is intentionally not a full JSON Schema
+  validator.
+- Capability fallback rules beyond async selection are documented but not fully
+  implemented as processing behavior.

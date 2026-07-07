@@ -1,165 +1,66 @@
-@startuml OGC_API_MCP_System_Architecture
-title Experimental OGC API MCP Reference Server - System Architecture
+@startuml
+title OGC API MCP Reference Server - System Architecture
 
 skinparam componentStyle rectangle
-skinparam packageStyle rectangle
-skinparam shadowing false
-skinparam defaultTextAlignment center
-skinparam wrapWidth 220
-skinparam maxMessageSize 180
 
-actor "User" as user
-rectangle "MCP-compatible AI client" as ai_client {
-  component "AI model" as model
-  component "MCP host / client adapter" as mcp_host
-  model --> mcp_host : selects tools and arguments
+actor "Human User" as User
+component "MCP Client" as Client
+component "FastMCP Server\napp.py" as App
+component "Proxy Runtime\nruntime.py" as Runtime
+database "Plan Store\nmemory or Redis" as PlanStore
+database "Proxy Memory Store\nmemory or Redis" as MemoryStore
+
+package "Runtime Services" {
+  component "ServerRegistry" as Registry
+  component "OgcHttpClient" as Transport
+  component "CapabilityCache" as Capabilities
+  component "FallbackEngine" as Fallbacks
+  component "ProxyPlanner" as Planner
+  component "PlanningWorkflow" as Workflow
+  component "ResponseSanitizer" as Sanitizer
 }
 
-cloud "MCP transport\nstdio | Streamable HTTP | SSE" as mcp_transport
-
-node "OGC API MCP Reference Server" as reference_server {
-  component "CLI entrypoint\n__main__.py" as cli
-
-  package "FastMCP Adapter Layer\napp.py" as adapter {
-    component "Stable MCP tool contract\n18 ogc_* tools" as tools
-    component "MCP resources\nworkflow guide\nregistered servers" as resources
-    component "Structured invocation wrapper\ninvoke() | parse_json_object()" as invocation
-
-    tools --> invocation
-  }
-
-  package "SDK-independent OGC Service Layer\nmodules/" as services {
-    component "CommonService\nlanding page\nconformance\nsafe relative GET" as common
-    component "FeaturesService\ncollections\nitems\nindividual features" as features
-    component "RecordsService\ncatalogue collections\nsearch\nrecord metadata" as records
-    component "ProcessesService\nprocess discovery\nexecution\njob lifecycle" as processes
-  }
-
-  package "Core Infrastructure" as core {
-    component "Config loader\nconfig.py" as config
-    component "Immutable models\nmodels.py" as models
-    component "ServerRegistry\nregistry.py" as registry
-    component "Security validation\nsecurity.py" as security
-    component "Bounded HTTP client\ntransport.py" as http_client
-    component "Stable result envelopes\nresult.py" as envelopes
-    component "Structured errors\nerrors.py" as errors
-  }
-
-  cli --> tools : creates and runs FastMCP
-  resources --> registry : lists non-secret metadata
-  invocation --> common
-  invocation --> features
-  invocation --> records
-  invocation --> processes
-
-  common --> registry : resolve registered server
-  features --> registry : resolve registered server
-  records --> registry : resolve registered server
-  processes --> registry : resolve registered server
-
-  common --> http_client : GET
-  features --> http_client : GET
-  records --> http_client : GET
-  processes --> http_client : GET | POST | DELETE
-  processes --> security : validate execute references
-
-  config --> models : creates typed settings
-  registry --> models : reads server profiles
-  registry --> security : validate base URLs
-  http_client --> models : auth, limits, response model
-  http_client --> security : validate relative path
-
-  common --> envelopes
-  features --> envelopes
-  records --> envelopes
-  processes --> envelopes
-  invocation --> errors : catches expected errors
-  envelopes --> errors : serializes failures
+package "OGC Module Services" {
+  component "CommonService" as Common
+  component "FeaturesService" as Features
+  component "RecordsService" as Records
+  component "ProcessesService" as Processes
 }
 
-database "Operator-owned configuration\nconfig.json\n\nregistered server IDs\nservice modules\npath overrides\ndefaults\nsecurity policy\nrequest limits\nenvironment variable names" as operator_config
-
-collections "Deployment environment /\nsecret manager\n\ncredential values\nOGC_MCP_CONFIG\nOGC_MCP_HOST\nOGC_MCP_PORT" as environment
-
-cloud "Operator-approved OGC API deployments" as upstreams {
-  component "GeoLabs\nOGC API - Processes" as geolabs
-  component "CubeWerx\nOGC API - Processes" as cubewerx
-  component "pygeoapi\nCommon | Features | Records | Processes" as pygeoapi
-  component "pycsw\nOGC API - Records" as pycsw
-  component "Additional registered\nOGC API deployments" as other_servers
+cloud "Registered OGC API Servers" as OGC {
+  component "Common API" as CommonApi
+  component "Features API" as FeaturesApi
+  component "Records API" as RecordsApi
+  component "Processes API" as ProcessesApi
 }
 
-database "Referenced geospatial datasets\nFeature collections | records | files" as datasets
+User --> Client
+Client --> App : MCP tool calls
+App --> Runtime
+Runtime --> Registry
+Runtime --> Transport
+Runtime --> Common
+Runtime --> Features
+Runtime --> Records
+Runtime --> Processes
+Runtime --> Capabilities
+Runtime --> Fallbacks
+Runtime --> Planner
+Runtime --> Workflow
+Runtime --> Sanitizer
 
-user --> model : asks a geospatial question
-mcp_host --> mcp_transport : MCP request
-mcp_transport --> tools : tool call
-resources --> mcp_transport : MCP resource response
-envelopes --> mcp_transport : JSON result envelope
-mcp_transport --> mcp_host : MCP response
+Planner --> PlanStore
+App --> MemoryStore : summary mode
 
-operator_config --> config : load at startup
-environment --> cli : runtime settings
-environment --> http_client : inject secret values only\nimmediately before request
+Common --> Transport
+Features --> Transport
+Records --> Transport
+Processes --> Transport
+Capabilities --> Transport
 
-http_client --> geolabs : bounded HTTP
-http_client --> cubewerx : bounded HTTP
-http_client --> pygeoapi : bounded HTTP
-http_client --> pycsw : bounded HTTP
-http_client --> other_servers : bounded HTTP
-
-processes --> datasets : allowlisted href in execute payload
-geolabs --> datasets : dereference process input
-cubewerx --> datasets : dereference process input
-other_servers --> datasets : dereference process input
-
-note right of tools
-Registry
-* ogc_servers_list
-
-Common
-* ogc_common_get_landing_page
-* ogc_common_get_conformance
-* ogc_common_get_resource
-
-Features
-* ogc_features_list_collections
-* ogc_features_describe_collection
-* ogc_features_get_items
-* ogc_features_get_item
-
-Records
-* ogc_records_list_collections
-* ogc_records_search
-* ogc_records_get_record
-
-Processes and jobs
-* ogc_processes_list
-* ogc_processes_describe
-* ogc_processes_execute
-* ogc_jobs_list
-* ogc_jobs_get_status
-* ogc_jobs_get_results
-* ogc_jobs_dismiss
-end note
-
-note bottom of registry
-The model selects an operator-approved server_id.
-It cannot provide an arbitrary MCP-originated
-upstream destination.
-end note
-
-note bottom of security
-Validates base URLs, relative resource paths,
-private-network policy, execute-payload hrefs,
-and operator-approved reference hosts.
-end note
-
-note bottom of http_client
-Injects credentials from environment variables,
-does not follow redirects, applies timeouts,
-and caps upstream response bytes.
-end note
+Transport --> CommonApi
+Transport --> FeaturesApi
+Transport --> RecordsApi
+Transport --> ProcessesApi
 
 @enduml
-

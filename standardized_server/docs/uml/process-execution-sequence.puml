@@ -1,141 +1,78 @@
-@startuml OGC_API_MCP_Process_Execution_Sequence
-title Experimental OGC API MCP Reference Server - Process Discovery and Execution
-
-skinparam shadowing false
-skinparam responseMessageBelowArrow true
-skinparam maxMessageSize 180
+@startuml
+title Proxy Process Execution Sequence
 
 actor User
-participant "AI model" as Model
-participant "MCP host" as Host
-participant "FastMCP adapter\napp.py" as App
-participant "Result wrapper\nresult.py" as Result
-participant "ProcessesService\nmodules/processes.py" as Processes
-participant "ServerRegistry\nregistry.py" as Registry
-participant "Security validator\nsecurity.py" as Security
-participant "Bounded HTTP client\ntransport.py" as Http
-participant "Registered OGC API\nProcesses server" as Ogc
-database "Referenced geospatial\ndataset" as Dataset
+participant "MCP Client" as Client
+participant "FastMCP Tools\napp.py" as App
+participant "PlanningWorkflow" as Workflow
+participant "ProxyPlanner" as Planner
+participant "ProcessesService" as Processes
+participant "FeaturesService" as Features
+database "Plan Store" as Store
+participant "OGC Processes API" as OGC
 
-User -> Model : Request geospatial processing
-Model -> Host : Select ogc_processes_list(server_id)
-Host -> App : MCP tools/call
-App -> Result : invoke("processes.list", callback)
-Result -> Processes : list_processes(server_id)
-Processes -> Registry : get(server_id, service="processes")
-Registry --> Processes : approved ServerProfile
-Processes -> Http : request(profile, "GET", "/processes")
-Http -> Security : validate_relative_path("/processes")
-Security --> Http : accepted
-Http -> Ogc : GET /processes?f=json
-Ogc --> Http : process summaries
-Http --> Processes : OgcResponse
-Processes --> Result : stable success envelope
-Result --> App : structured result
-App --> Host : MCP tool response
-Host --> Model : advertised process IDs
+User -> Client : request geospatial process
+Client -> App : ogc_processes_list
+App -> Processes : list_processes()
+Processes -> OGC : GET /processes
+OGC --> Processes : process list
+Processes --> App : result envelope
+App --> Client : summarized result
 
-Model -> Host : Select ogc_processes_describe(process_id, server_id)
-Host -> App : MCP tools/call
-App -> Result : invoke("processes.describe", callback)
-Result -> Processes : describe(process_id, server_id)
-Processes -> Registry : get(server_id, service="processes")
-Registry --> Processes : approved ServerProfile
-Processes -> Http : request(profile, "GET", "/processes/{processId}")
-Http -> Security : validate_relative_path(path)
-Security --> Http : accepted
-Http -> Ogc : GET /processes/{processId}?f=json
-Ogc --> Http : exact inputs, outputs, media types, job controls
-Http --> Processes : OgcResponse
-Processes --> Result : stable success envelope
-Result --> App : structured result
-App --> Host : MCP tool response
-Host --> Model : advertised execution contract
+Client -> App : ogc_processes_describe(process_id)
+App -> Processes : describe(process_id)
+Processes -> OGC : GET /processes/{id}
+OGC --> Processes : process description
+Processes --> App : result envelope
+App --> Client : process schema
 
-note over Model
-The model builds the execute body from the advertised schema.
-Input and output identifiers are preserved exactly as supplied
-by the upstream OGC API implementation.
-end note
+Client -> App : ogc_proxy_create_plan(plan_request_json)
+App -> Workflow : create_plan(request)
+Workflow -> Planner : create_plan(request)
+Planner -> Processes : describe(process_id)
+Processes -> OGC : GET /processes/{id}
+OGC --> Processes : process description
 
-Model -> Host : Select ogc_processes_execute(process_id,\nexecute_request_json, execution_mode)
-Host -> App : MCP tools/call
-App -> Result : parse_json_object(execute_request_json)\ninvoke("processes.execute", callback)
-Result -> Processes : execute(process_id, execute_request, ...)
-Processes -> Registry : get(server_id, service="processes")
-Registry --> Processes : approved ServerProfile + SecurityPolicy
-Processes -> Security : validate_execute_references(payload, policy)
-
-alt Payload contains disallowed href, private URL, or malformed policy
-  Security --> Processes : SecurityPolicyError
-  Processes --> Result : expected error
-  Result --> App : {ok: false, error: {...}}
-  App --> Host : MCP tool response
-  Host --> Model : structured failure
-else References accepted
-  Security --> Processes : accepted
-  Processes -> Http : request(profile, "POST",\n"/processes/{processId}/execution", json_body, Prefer)
-  Http -> Security : validate_relative_path(path)
-  Security --> Http : accepted
-  Http -> Http : inject credential from environment if configured\napply timeout and response byte cap\ndo not follow redirects
-  Http -> Ogc : POST /processes/{processId}/execution
-  Ogc -> Dataset : dereference allowlisted input href when required
-  Dataset --> Ogc : input geospatial data
-
-  alt Synchronous execution
-    Ogc --> Http : 200 result payload
-    Http --> Processes : OgcResponse
-    Processes --> Result : stable success envelope with output
-    Result --> App : structured result
-    App --> Host : MCP tool response
-    Host --> Model : process output
-    Model --> User : Explain result
-  else Asynchronous execution
-    Ogc --> Http : 201/202 + job ID or Location
-    Http --> Processes : OgcResponse
-    Processes --> Result : stable envelope + next-tool guidance
-    Result --> App : structured result
-    App --> Host : MCP tool response
-    Host --> Model : job metadata
-
-    loop Poll until successful, failed, or dismissed
-      Model -> Host : ogc_jobs_get_status(job_id, server_id)
-      Host -> App : MCP tools/call
-      App -> Result : invoke("jobs.get_status", callback)
-      Result -> Processes : get_job_status(job_id, server_id)
-      Processes -> Registry : get(server_id, service="processes")
-      Registry --> Processes : approved ServerProfile
-      Processes -> Http : GET /jobs/{jobId}
-      Http -> Security : validate_relative_path(path)
-      Security --> Http : accepted
-      Http -> Ogc : GET /jobs/{jobId}?f=json
-      Ogc --> Http : job status
-      Http --> Processes : OgcResponse
-      Processes --> Result : stable success envelope
-      Result --> App : structured result
-      App --> Host : MCP tool response
-      Host --> Model : job status
-    end
-
-    Model -> Host : ogc_jobs_get_results(job_id, server_id)
-    Host -> App : MCP tools/call
-    App -> Result : invoke("jobs.get_results", callback)
-    Result -> Processes : get_job_results(job_id, server_id)
-    Processes -> Registry : get(server_id, service="processes")
-    Registry --> Processes : approved ServerProfile
-    Processes -> Http : GET /jobs/{jobId}/results
-    Http -> Security : validate_relative_path(path)
-    Security --> Http : accepted
-    Http -> Ogc : GET /jobs/{jobId}/results?f=json
-    Ogc --> Http : process outputs
-    Http --> Processes : OgcResponse
-    Processes --> Result : stable success envelope
-    Result --> App : structured result
-    App --> Host : MCP tool response
-    Host --> Model : process outputs
-    Model --> User : Explain result
-  end
+alt request declares feature sources
+  Planner -> Features : describe_collection(collection_id, server_id)
+  Features --> Planner : collection metadata
 end
 
-@enduml
+Planner -> Store : put(plan)
+Planner --> Workflow : ProxyPlan
 
+alt needs resolution
+  Workflow --> App : resolution_required
+  App --> Client : per-field questions
+  Client -> User : ask one question
+  User --> Client : answer
+  Client -> App : ogc_proxy_update_plan(plan_id, execute_request_json)
+  App -> Planner : update_plan(...)
+  Planner -> Store : put(updated plan)
+else ready for confirmation
+  Workflow --> App : confirmation_prompt
+  App --> Client : execute_request
+  Client -> User : show exact execute_request
+  User --> Client : approves
+end
+
+Client -> App : ogc_proxy_confirm_plan(plan_id, approved=true)
+App -> Workflow : confirm_plan(...)
+Workflow -> Planner : confirm_plan(...)
+Planner -> Store : put(confirmed plan)
+Workflow --> App : confirmed
+
+Client -> App : ogc_proxy_execute_plan(plan_id)
+App -> Workflow : execute_plan(...)
+Workflow -> Planner : execute_plan(...)
+Planner -> Store : put(running)
+Planner -> Processes : execute(process_id, stored execute_request)
+Processes -> OGC : POST /processes/{id}/execution
+OGC --> Processes : result or job metadata
+Processes --> Planner : result envelope
+Planner -> Store : put(completed)
+Workflow --> App : result envelope
+App --> Client : summary or raw response
+Client --> User : final result
+
+@enduml

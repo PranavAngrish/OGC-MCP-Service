@@ -34,30 +34,30 @@ This bridge gives MCP clients a structured way to:
 
 Start here if you are new to the project:
 
-- [Documentation Index](./standardized_server/docs/INDEX.md)
-- [Product Overview](./standardized_server/docs/PRODUCT.md)
-- [Quickstart](./standardized_server/docs/QUICKSTART.md)
-- [Architecture](./standardized_server/docs/ARCHITECTURE.md)
-- [Codebase Tour](./standardized_server/docs/CODEBASE_TOUR.md)
+- [Documentation Index](./docs/INDEX.md)
+- [Product Overview](./docs/PRODUCT.md)
+- [Quickstart](./docs/QUICKSTART.md)
+- [Architecture](./docs/ARCHITECTURE.md)
+- [Codebase Tour](./docs/CODEBASE_TOUR.md)
 
 For implementation and operations:
 
-- [Tool Contract](./standardized_server/docs/TOOL_CONTRACT.md)
-- [Proxy Workflow](./standardized_server/docs/PROXY_WORKFLOW.md)
-- [Configuration](./standardized_server/docs/CONFIGURATION.md)
-- [Security Model](./standardized_server/docs/SECURITY.md)
-- [Development Guide](./standardized_server/docs/DEVELOPMENT.md)
-- [Testing Guide](./standardized_server/docs/TESTING.md)
-- [Deployment Guide](./standardized_server/docs/DEPLOYMENT.md)
-- [Extending the Server](./standardized_server/docs/EXTENDING.md)
-- [Troubleshooting](./standardized_server/docs/TROUBLESHOOTING.md)
-- [Experimental Conformance Checklist](./standardized_server/docs/CONFORMANCE.md)
+- [Tool Contract](./docs/TOOL_CONTRACT.md)
+- [Proxy Workflow](./docs/PROXY_WORKFLOW.md)
+- [Configuration](./docs/CONFIGURATION.md)
+- [Security Model](./docs/SECURITY.md)
+- [Development Guide](./docs/DEVELOPMENT.md)
+- [Testing Guide](./docs/TESTING.md)
+- [Deployment Guide](./docs/DEPLOYMENT.md)
+- [Extending the Server](./docs/EXTENDING.md)
+- [Troubleshooting](./docs/TROUBLESHOOTING.md)
+- [Experimental Conformance Checklist](./docs/CONFORMANCE.md)
 
 For GSoC review:
 
-- [GSoC Final Report](./standardized_server/docs/gsoc/FINAL_REPORT.md)
-- [GSoC Deliverables](./standardized_server/docs/gsoc/DELIVERABLES.md)
-- [GSoC Timeline](./standardized_server/docs/gsoc/TIMELINE.md)
+- [GSoC Final Report](./docs/gsoc/FINAL_REPORT.md)
+- [GSoC Deliverables](./docs/gsoc/DELIVERABLES.md)
+- [GSoC Timeline](./docs/gsoc/TIMELINE.md)
 
 ## Quick Start
 
