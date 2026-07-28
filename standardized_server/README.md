@@ -78,6 +78,16 @@ PYTHONPATH=standardized_server/src \
 
 The tests use mocked HTTP transports and do not require public network access.
 
+## Conversational React UI
+
+The repository-level [`../ui/`](../ui/) application provides a conversational
+interface, streamed progress summaries and MCP tool activity, automatic
+background-job updates, interactive geospatial result maps, and a server-side
+Gemini gateway using the OpenAI-compatible API connected to this MCP server
+over stdio.
+
+See the [UI README](../ui/README.md) for setup and architecture details.
+
 ## Repository Layout
 
 ```text
@@ -92,6 +102,7 @@ gsoc-mcp/
 |   |-- spec/
 |   |-- src/ogc_mcp_reference/
 |   `-- tests/
+|-- ui/
 `-- README.md
 ```
 

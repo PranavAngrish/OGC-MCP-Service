@@ -584,9 +584,16 @@ def _collection_hrefs(execute_request: dict[str, Any], collection_id: str) -> li
 
 
 def _href_matches_collection(href: str, collection_id: str) -> bool:
-    path = unquote(urlparse(href).path).rstrip("/")
-    marker = f"/collections/{collection_id}"
-    return path == marker or path.startswith(f"{marker}/")
+    """Match an exact OGC collection path segment below any server base path."""
+    path_segments = [
+        unquote(segment)
+        for segment in urlparse(href).path.split("/")
+        if segment
+    ]
+    return any(
+        segment == "collections" and path_segments[index + 1] == collection_id
+        for index, segment in enumerate(path_segments[:-1])
+    )
 
 
 def _href_matches_server_base(href: str, base_url: str) -> bool:

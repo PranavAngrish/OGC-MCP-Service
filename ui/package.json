@@ -1,0 +1,40 @@
+{
+  "name": "ogc-mcp-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n gateway,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:server": "node --env-file-if-exists=.env --watch server/index.mjs",
+    "build": "tsc -b && vite build",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "check": "tsc -b --pretty false",
+    "test": "node --test server/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "maplibre-gl": "^5.24.0",
+    "motion": "^12.23.0",
+    "openai": "^6.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

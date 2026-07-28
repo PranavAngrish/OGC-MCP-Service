@@ -37,8 +37,8 @@ This prohibition covers EVERY mechanism without exception:
 
 When the user requests spatial analysis, call ogc_processes_list FIRST to discover
 available processes. If the process list is truncated, retry with
-search_text="<relevant keyword>" (e.g. search_text="delaunay") to filter the
-full list client-side before concluding a process does not exist. Only after a
+search_text="<relevant keyword>" (e.g. search_text="delaunay") to scan the
+catalogue in bounded pages before concluding a process does not exist. Only after a
 targeted search_text query returns no matches may you tell the user no suitable
 process was found — follow the CAPABILITY LIMIT PROTOCOL at the end of these
 instructions and do not substitute self-performed analysis of any kind.
@@ -1027,10 +1027,9 @@ def create_mcp_server(
         When the server has many processes (hundreds or more), use search_text
         to filter by keyword before the list is truncated. For example, pass
         search_text="delaunay" to find triangulation processes or
-        search_text="buffer" to find buffering processes. The filter runs
-        client-side across all process IDs, titles, and descriptions before
-        the summary is built, so matching processes are always visible even
-        when they would otherwise be cut off by the item limit.
+        search_text="buffer" to find buffering processes. The bridge scans the
+        advertised catalogue in bounded pages and filters process IDs, titles,
+        and descriptions before the summary is built.
 
         Args:
             server_id: Registered Processes server ID. If omitted, the configured
@@ -1039,28 +1038,16 @@ def create_mcp_server(
                 "raw" for the original process list envelope.
             summary_fields_json: Optional object like
                 {"fields":["id","title","description","version"]}.
-            search_text: Optional keyword to filter the process list client-side.
-                Applied across id, title, description, and summary fields before
-                truncation. Use this when the server has many processes and you
-                know a keyword that identifies the target process.
+            search_text: Optional keyword used during bounded paginated process
+                discovery. Applied across id, title, description, and summary
+                fields. Use it when a large server catalogue is being searched.
 
         Returns:
             A standard result envelope containing either a model-safe summary
             plus memory handle, or the raw process list.
         """
         def callback() -> dict[str, Any]:
-            result = processes.list_processes(server_id)
-            if search_text and isinstance(
-                result.get("data", {}).get("processes"), list
-            ):
-                term = search_text.lower()
-                result["data"]["processes"] = [
-                    p for p in result["data"]["processes"]
-                    if term in (p.get("id") or "").lower()
-                    or term in (p.get("title") or "").lower()
-                    or term in (p.get("description") or "").lower()
-                    or term in (p.get("summary") or "").lower()
-                ]
+            result = processes.list_processes(server_id, search_text=search_text)
             return _apply_response_mode(
                 result,
                 response_mode=response_mode,

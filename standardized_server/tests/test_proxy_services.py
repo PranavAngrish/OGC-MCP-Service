@@ -22,7 +22,10 @@ from ogc_mcp_reference.workflows import PlanningWorkflow
 from helpers import build_registry
 
 
-def build_split_registry() -> ServerRegistry:
+def build_split_registry(
+    *,
+    features_base_url: str = "https://features.example.test",
+) -> ServerRegistry:
     return ServerRegistry(
         parse_settings(
             {
@@ -43,7 +46,7 @@ def build_split_registry() -> ServerRegistry:
                     {
                         "id": "features-server",
                         "title": "Features API",
-                        "base_url": "https://features.example.test",
+                        "base_url": features_base_url,
                         "services": ["common", "features", "records"],
                         "defaults": {"records_collection": "metadata"},
                     },
@@ -388,6 +391,102 @@ class ProxyServiceTests(unittest.TestCase):
                 ("features.example.test", "GET", "/collections/roads"),
             ],
         )
+
+    def test_planner_accepts_collection_href_below_server_base_path(self) -> None:
+        href = (
+            "https://demo.pygeoapi.io/master/collections/"
+            "dutch_windmills/items?f=json&limit=10"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "process.example.test":
+                if request.url.path == "/processes/Buffer" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.host == "demo.pygeoapi.io":
+                if (
+                    request.url.path == "/master/collections/dutch_windmills"
+                    and request.method == "GET"
+                ):
+                    return httpx.Response(
+                        200,
+                        json={"id": "dutch_windmills", "title": "Dutch windmills"},
+                    )
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_split_registry(
+            features_base_url="https://demo.pygeoapi.io/master"
+        )
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "server_id": "process-server",
+                "process_id": "Buffer",
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "dutch_windmills",
+                        "href": href,
+                    }
+                ],
+                "execute_request": {
+                    "inputs": {"InputPolygon": {"href": href}}
+                },
+            }
+        )
+
+        self.assertEqual(plan.status, "ready_for_confirmation")
+        self.assertEqual(plan.steps[0]["collection_id"], "dutch_windmills")
+        self.assertEqual(plan.steps[0]["hrefs"], [href])
+
+    def test_planner_rejects_collection_id_prefix_below_server_base_path(self) -> None:
+        href = (
+            "https://features.example.test/master/collections/"
+            "dutch_windmills_archive/items?f=json"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "process.example.test":
+                if request.url.path == "/processes/Buffer" and request.method == "GET":
+                    return httpx.Response(200, json={"id": "Buffer", "inputs": {}})
+            if request.url.host == "features.example.test":
+                if request.url.path == "/master/collections/dutch_windmills":
+                    return httpx.Response(200, json={"id": "dutch_windmills"})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_split_registry(
+            features_base_url="https://features.example.test/master"
+        )
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "server_id": "process-server",
+                "process_id": "Buffer",
+                "sources": [
+                    {
+                        "server_id": "features-server",
+                        "collection_id": "dutch_windmills",
+                        "href": href,
+                    }
+                ],
+                "execute_request": {"inputs": {"InputPolygon": {"href": href}}},
+            }
+        )
+
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["field"], "sources[0].href")
+        self.assertIn("collection_id", plan.unresolved[0]["reason"])
 
     def test_planner_rejects_source_href_outside_declared_features_server(self) -> None:
         href = "https://other.example.test/collections/roads/items?f=json"

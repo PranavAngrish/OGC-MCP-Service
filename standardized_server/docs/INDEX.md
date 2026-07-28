@@ -11,6 +11,7 @@ the reference server.
 | [Quickstart](QUICKSTART.md) | How to install, configure, run, and smoke-test the server. |
 | [Architecture](ARCHITECTURE.md) | How the runtime, modules, proxy services, workflow, and stores fit together. |
 | [Codebase Tour](CODEBASE_TOUR.md) | Where code lives and what each file or package owns. |
+| [React User Interface](UI.md) | How to run and understand the conversational React and LLM gateway. |
 
 ## Implementation Reference
 

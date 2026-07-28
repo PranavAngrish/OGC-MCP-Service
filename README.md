@@ -78,6 +78,23 @@ PYTHONPATH=standardized_server/src \
 
 The tests use mocked HTTP transports and do not require public network access.
 
+## Conversational React UI
+
+The [`ui/`](./ui/) application provides a polished chat interface, streamed
+progress summaries and MCP tool activity, automatic background-job updates,
+interactive geospatial result maps, and a server-side Gemini gateway using
+Gemini's OpenAI-compatible API with this MCP server over stdio.
+
+```bash
+cd ui
+cp .env.example .env
+# Add GEMINI_API_KEY to .env
+npm install
+npm run dev
+```
+
+See the [UI README](./ui/README.md) for architecture and production notes.
+
 ## Repository Layout
 
 ```text
@@ -92,6 +109,7 @@ gsoc-mcp/
 |   |-- spec/
 |   |-- src/ogc_mcp_reference/
 |   `-- tests/
+|-- ui/
 `-- README.md
 ```
 
