@@ -16,8 +16,16 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import EmptyState from "./components/EmptyState";
 import MessageBubble from "./components/MessageBubble";
 import { updateActivities } from "./lib/activities";
-import { streamChat, subscribeSessionEvents } from "./lib/chat";
-import type { GatewayHealth, MapVisualization, Message, StreamEvent } from "./types";
+import { decidePlanApproval, streamChat, subscribeSessionEvents } from "./lib/chat";
+import { normalizeOutputManifest, upsertOutputManifest } from "./lib/outputs";
+import type {
+  GatewayHealth,
+  MapVisualization,
+  Message,
+  ApprovalRequest,
+  OutputManifestV1,
+  StreamEvent,
+} from "./types";
 
 const makeId = () => crypto.randomUUID();
 
@@ -39,6 +47,57 @@ function withVisualization(message: Message, visualization: MapVisualization): M
     maps: exists
       ? maps.map((map) => (map.id === visualization.id ? visualization : map))
       : [...maps, visualization].slice(-4),
+  };
+}
+
+function manifestFromEvent(event: StreamEvent): OutputManifestV1 | null {
+  const workflow = event.data.event && typeof event.data.event === "object"
+    ? event.data.event as Record<string, unknown>
+    : event.data;
+  const payload = workflow.payload && typeof workflow.payload === "object"
+    ? workflow.payload as Record<string, unknown>
+    : {};
+  return normalizeOutputManifest(event.data.manifest || payload.manifest);
+}
+
+function withOutputManifest(message: Message, manifest: OutputManifestV1): Message {
+  return {
+    ...message,
+    outputManifests: upsertOutputManifest(message.outputManifests || [], manifest),
+  };
+}
+
+function approvalFromEvent(event: StreamEvent): ApprovalRequest | null {
+  const candidate = event.data.request;
+  if (!candidate || typeof candidate !== "object") return null;
+  const request = candidate as Record<string, unknown>;
+  if (
+    typeof request.challengeId !== "string"
+    || typeof request.planId !== "string"
+    || typeof request.digest !== "string"
+    || typeof request.expiresAt !== "string"
+  ) return null;
+  return {
+    challengeId: request.challengeId,
+    planId: request.planId,
+    serverId: typeof request.serverId === "string" ? request.serverId : "",
+    executeRequest: request.executeRequest,
+    inputContext: request.inputContext,
+    steps: Array.isArray(request.steps) ? request.steps : [],
+    digest: request.digest,
+    expiresAt: request.expiresAt,
+    status: "pending",
+  };
+}
+
+function withApprovalRequest(message: Message, request: ApprovalRequest): Message {
+  const current = message.approvalRequests || [];
+  const index = current.findIndex((item) => item.challengeId === request.challengeId);
+  return {
+    ...message,
+    approvalRequests: index < 0
+      ? [...current, request].slice(-4)
+      : current.map((item, itemIndex) => itemIndex === index ? request : item),
   };
 }
 
@@ -71,10 +130,20 @@ export default function App() {
         const visualization = mapFromEvent(event);
         return visualization ? withVisualization(message, visualization) : message;
       }
-      if (event.event === "job_status") {
+      if (event.event === "output_manifest") {
+        const manifest = manifestFromEvent(event);
+        if (!manifest) return message;
         return {
-          ...message,
+          ...withOutputManifest(message, manifest),
           activities: updateActivities(message.activities || [], event),
+        };
+      }
+      if (["job_status", "artifact_status", "workflow_event"].includes(event.event)) {
+        const manifest = event.event === "workflow_event" ? manifestFromEvent(event) : null;
+        const updatedMessage = manifest ? withOutputManifest(message, manifest) : message;
+        return {
+          ...updatedMessage,
+          activities: updateActivities(updatedMessage.activities || [], event),
         };
       }
       return message;
@@ -119,6 +188,8 @@ export default function App() {
       pending: true,
       activities: [],
       maps: [],
+      outputManifests: [],
+      approvalRequests: [],
     };
     const abortController = new AbortController();
     stickToBottom.current = true;
@@ -130,18 +201,39 @@ export default function App() {
       setMessages((current) =>
         current.map((message) => {
           if (message.id !== assistantId) return message;
-          if (["status", "reasoning_delta", "tool_start", "tool_result"].includes(event.event)) {
+          if ([
+            "status",
+            "reasoning_delta",
+            "tool_start",
+            "tool_result",
+            "artifact_status",
+            "workflow_event",
+          ].includes(event.event)) {
+            const manifest = event.event === "workflow_event" ? manifestFromEvent(event) : null;
+            const updatedMessage = manifest ? withOutputManifest(message, manifest) : message;
             return {
-              ...message,
-              activities: updateActivities(message.activities || [], event),
+              ...updatedMessage,
+              activities: updateActivities(updatedMessage.activities || [], event),
             };
           }
           if (event.event === "answer") {
             return { ...message, content: String(event.data.content || "") };
           }
+          if (event.event === "approval_request") {
+            const request = approvalFromEvent(event);
+            return request ? withApprovalRequest(message, request) : message;
+          }
           if (event.event === "map_data") {
             const visualization = mapFromEvent(event);
             return visualization ? withVisualization(message, visualization) : message;
+          }
+          if (event.event === "output_manifest") {
+            const manifest = manifestFromEvent(event);
+            if (!manifest) return message;
+            return {
+              ...withOutputManifest(message, manifest),
+              activities: updateActivities(message.activities || [], event),
+            };
           }
           if (event.event === "done") {
             const cancelled = event.data.cancelled === true;
@@ -149,7 +241,9 @@ export default function App() {
               ...message,
               pending: false,
               activities: (message.activities || []).map((activity) =>
-                activity.status === "running" && !activity.id.startsWith("background-job-")
+                activity.status === "running"
+                  && activity.kind !== "artifact"
+                  && !activity.id.startsWith("background-job-")
                   ? { ...activity, status: cancelled ? "cancelled" : "complete" }
                   : activity,
               ),
@@ -181,6 +275,59 @@ export default function App() {
     } finally {
       setController(null);
       textarea.current?.focus();
+    }
+  };
+
+  const decideApproval = async (
+    messageId: string,
+    challengeId: string,
+    approved: boolean,
+  ) => {
+    if (busy) return;
+    setMessages((current) => current.map((message) => (
+      message.id !== messageId
+        ? message
+        : {
+          ...message,
+          approvalRequests: (message.approvalRequests || []).map((request) =>
+            request.challengeId === challengeId
+              ? { ...request, status: "submitting", error: undefined }
+              : request
+          ),
+        }
+    )));
+    try {
+      const decision = await decidePlanApproval(sessionId, challengeId, approved);
+      setMessages((current) => current.map((message) => (
+        message.id !== messageId
+          ? message
+          : {
+            ...message,
+            approvalRequests: (message.approvalRequests || []).map((request) =>
+              request.challengeId === challengeId
+                ? { ...request, status: decision.decision }
+                : request
+            ),
+          }
+      )));
+      await submit(
+        decision.decision === "approved"
+          ? `I approved the exact displayed request for plan ${decision.planId}. Continue with that plan.`
+          : `I rejected the exact displayed request for plan ${decision.planId}. Do not execute it.`,
+      );
+    } catch (error) {
+      setMessages((current) => current.map((message) => (
+        message.id !== messageId
+          ? message
+          : {
+            ...message,
+            approvalRequests: (message.approvalRequests || []).map((request) =>
+              request.challengeId === challengeId
+                ? { ...request, status: "error", error: (error as Error).message }
+                : request
+            ),
+          }
+      )));
     }
   };
 
@@ -258,7 +405,14 @@ export default function App() {
             ) : (
               <div className="messages">
                 <AnimatePresence initial={false}>
-                  {messages.map((message) => <MessageBubble message={message} key={message.id} />)}
+                  {messages.map((message) => (
+                    <MessageBubble
+                      message={message}
+                      onApprovalDecision={(messageId, challengeId, approved) =>
+                        void decideApproval(messageId, challengeId, approved)}
+                      key={message.id}
+                    />
+                  ))}
                 </AnimatePresence>
                 <div ref={scrollAnchor} />
               </div>

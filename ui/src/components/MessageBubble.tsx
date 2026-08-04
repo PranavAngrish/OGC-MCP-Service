@@ -3,13 +3,29 @@ import { Bot, CircleAlert } from "lucide-react";
 import { lazy, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { manifestHasReadyMap, mapVisualizationHasDrawableLayer } from "../lib/outputs";
 import type { Message } from "../types";
 import ActivityFeed from "./ActivityFeed";
+import ApprovalCard from "./ApprovalCard";
 
 const ResultMap = lazy(() => import("./ResultMap"));
+const OutputPanel = lazy(() => import("./OutputPanel"));
 
-export default function MessageBubble({ message }: { message: Message }) {
+export default function MessageBubble({
+  message,
+  onApprovalDecision,
+}: {
+  message: Message;
+  onApprovalDecision?: (messageId: string, challengeId: string, approved: boolean) => void;
+}) {
   const assistant = message.role === "assistant";
+  const manifestOwnsMap = manifestHasReadyMap(message.outputManifests);
+  const legacyMaps = manifestOwnsMap
+    ? []
+    : (message.maps || []).filter((visualization) => mapVisualizationHasDrawableLayer(visualization));
+  const unusableLegacyMaps = manifestOwnsMap
+    ? []
+    : (message.maps || []).filter((visualization) => !mapVisualizationHasDrawableLayer(visualization));
 
   return (
     <motion.article
@@ -39,13 +55,39 @@ export default function MessageBubble({ message }: { message: Message }) {
             )}
           </div>
         )}
-        {assistant && message.maps?.map((visualization) => (
+        {assistant && message.approvalRequests?.map((request) => (
+          <ApprovalCard
+            request={request}
+            disabled={message.pending}
+            onDecide={(challengeId, approved) =>
+              onApprovalDecision?.(message.id, challengeId, approved)}
+            key={request.challengeId}
+          />
+        ))}
+        {assistant && Boolean(message.outputManifests?.length) && (
+          <Suspense fallback={<div className="map-loading-card" role="status">Preparing output presentations…</div>}>
+            <OutputPanel manifests={message.outputManifests || []} />
+          </Suspense>
+        )}
+        {assistant && legacyMaps.map((visualization) => (
           <Suspense
             key={visualization.id}
             fallback={<div className="map-loading-card" role="status">Preparing map preview…</div>}
           >
             <ResultMap visualization={visualization} />
           </Suspense>
+        ))}
+        {assistant && unusableLegacyMaps.map((visualization) => (
+          <div className="legacy-map-fallback" role="status" key={visualization.id}>
+            <CircleAlert size={17} aria-hidden="true" />
+            <div>
+              <strong>Map preview not created</strong>
+              <p>
+                “{visualization.title}” did not contain a validated drawable result layer.
+                Its output has not been presented as an empty map.
+              </p>
+            </div>
+          </div>
         ))}
         {assistant && message.pending && !message.content && (
           <div className="answer-placeholder">

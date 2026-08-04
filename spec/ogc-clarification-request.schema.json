@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://52north.org/ogc-mcp/clarification-request/v1/schema.json",
+  "title": "OGC MCP Clarification Request",
+  "description": "A structured human-in-the-loop request for a material ambiguity in execution, interpretation, or presentation.",
+  "type": "object",
+  "required": [
+    "blocking",
+    "scope",
+    "issues"
+  ],
+  "properties": {
+    "blocking": {
+      "type": "boolean"
+    },
+    "scope": {
+      "enum": [
+        "execution",
+        "interpretation",
+        "presentation"
+      ]
+    },
+    "issues": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/definitions/issue"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "issue": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "fieldPath",
+        "question",
+        "whyItMatters"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "kind": {
+          "enum": [
+            "unit",
+            "crs",
+            "axis_order",
+            "input",
+            "output_format",
+            "presentation",
+            "remote_fetch"
+          ]
+        },
+        "fieldPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "whyItMatters": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "observedValue": {},
+        "options": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/definitions/option"
+          }
+        },
+        "recommended": {},
+        "allowFreeText": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "option": {
+      "type": "object",
+      "required": [
+        "value",
+        "label"
+      ],
+      "properties": {
+        "value": {},
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "consequence": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

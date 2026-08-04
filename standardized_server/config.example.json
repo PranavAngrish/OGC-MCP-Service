@@ -9,7 +9,8 @@
   "store": {
     "backend": "memory",
     "plan_ttl_seconds": 3600,
-    "memory_ttl_seconds": 1800
+    "memory_ttl_seconds": 1800,
+    "artifact_ttl_seconds": 1800
   },
   "policy": {
     "expose_direct_execution_tools": false
@@ -48,6 +49,18 @@
   "limits": {
     "timeout_seconds": 60,
     "max_response_bytes": 5000000
+  },
+  "output_resolution": {
+    "enabled": true,
+    "allow_same_origin": true,
+    "allowed_hosts": [],
+    "allow_private_networks": false,
+    "allow_insecure_redirects": false,
+    "max_redirects": 3,
+    "max_resolution_seconds": 60,
+    "max_response_bytes": 5000000,
+    "max_outputs": 20,
+    "inline_preview_bytes": 0
   }
 }
   ]

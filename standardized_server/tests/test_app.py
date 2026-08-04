@@ -63,12 +63,12 @@ class DirectExecutionGatingTests(unittest.TestCase):
 
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
         self.assertNotIn("ogc_processes_execute", names)
-        # The confirmation-gated proxy tools and the lower-risk cancel tool
-        # must remain available regardless of the policy flag.
+        # Confirmation-gated proxy tools remain available; state-changing
+        # interoperability tools stay absent unless explicitly enabled.
         self.assertIn("ogc_proxy_create_plan", names)
         self.assertIn("ogc_proxy_confirm_plan", names)
         self.assertIn("ogc_proxy_execute_plan", names)
-        self.assertIn("ogc_jobs_dismiss", names)
+        self.assertNotIn("ogc_jobs_dismiss", names)
 
     def test_direct_execution_tool_is_present_when_policy_enabled(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -85,6 +85,7 @@ class DirectExecutionGatingTests(unittest.TestCase):
 
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
         self.assertIn("ogc_processes_execute", names)
+        self.assertIn("ogc_jobs_dismiss", names)
 
         result = _call(
             mcp,
@@ -231,6 +232,87 @@ class ResponseModeTests(unittest.TestCase):
         self.assertTrue(executed["ok"])
         self.assertIn("handle", executed["memory"])
         self.assertEqual(executed["data"]["boundary"], "tool_result_data_only")
+        self.assertEqual(
+            executed["output_manifest"]["execution"]["planId"],
+            plan_id,
+        )
+        self.assertNotIn(
+            "data",
+            next(
+                representation
+                for representation in executed["output_manifest"]["outputs"][0][
+                    "representations"
+                ]
+                if representation["role"] == "original"
+            ),
+        )
+
+
+class ArtifactRetrievalToolTests(unittest.TestCase):
+    def test_retrieves_canonical_artifact_without_exposing_upstream_url(self) -> None:
+        feature_collection = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"name": "Example"},
+                    "geometry": {"type": "Point", "coordinates": [7.0, 52.0]},
+                }
+            ],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Example/execution":
+                return httpx.Response(200, json=feature_collection)
+            return httpx.Response(404, json={})
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_config(
+                directory,
+                {"policy": {"expose_direct_execution_tools": True}},
+            )
+            mcp = create_mcp_server(path, transport=httpx.MockTransport(handler))
+
+        executed = _call(
+            mcp,
+            "ogc_processes_execute",
+            {
+                "process_id": "Example",
+                "execute_request_json": "{\"inputs\": {}}",
+                "response_mode": "raw",
+            },
+        )
+        canonical = next(
+            representation
+            for representation in executed["output_manifest"]["outputs"][0][
+                "representations"
+            ]
+            if representation["role"] == "canonical"
+        )
+        self.assertNotIn("data", canonical)
+
+        retrieved = _call(
+            mcp,
+            "ogc_proxy_artifact_retrieve",
+            {"handle": canonical["handle"]},
+        )
+        self.assertTrue(retrieved["ok"])
+        self.assertEqual(retrieved["artifact"]["mediaType"], "application/geo+json")
+        self.assertEqual(retrieved["artifact"]["encoding"], "identity")
+        self.assertEqual(retrieved["artifact"]["data"], feature_collection)
+        self.assertEqual(retrieved["data"], feature_collection)
+        self.assertNotIn("href", retrieved["artifact"])
+
+    def test_rejects_non_artifact_handle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_mcp_server(_write_config(directory))
+        result = _call(
+            mcp,
+            "ogc_proxy_artifact_retrieve",
+            {"handle": "mem_not_an_artifact"},
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "invalid_argument")
 
 
 class CreatePlanInputValidationTests(unittest.TestCase):
@@ -273,6 +355,94 @@ class CreatePlanInputValidationTests(unittest.TestCase):
         self.assertFalse(created["confirmation_required"])
         self.assertEqual(created["plan"]["status"], "needs_resolution")
         self.assertEqual(created["plan"]["unresolved"][0]["field"], "inputs.InputPoints")
+
+    def test_unit_ambiguity_uses_structured_clarification_and_updates_in_place(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Buffer" and request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "Buffer",
+                        "inputs": {
+                            "BufferDistance": {
+                                "title": "Buffer distance",
+                                "minOccurs": 1,
+                                "schema": {"type": "number"},
+                            }
+                        },
+                    },
+                )
+            return httpx.Response(404, json={})
+
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_mcp_server(
+                _write_config(directory),
+                transport=httpx.MockTransport(handler),
+            )
+
+        execute_request = {"inputs": {"BufferDistance": 0.5}}
+        created = _call(
+            mcp,
+            "ogc_proxy_create_plan",
+            {
+                "plan_request_json": json.dumps(
+                    {
+                        "operation": "process_execute",
+                        "process_id": "Buffer",
+                        "execute_request": execute_request,
+                    }
+                )
+            },
+        )
+
+        self.assertTrue(created["resolution_required"])
+        clarification = created["clarification_request"]
+        self.assertTrue(clarification["blocking"])
+        self.assertEqual(clarification["scope"], "execution")
+        self.assertEqual(clarification["issues"][0]["kind"], "unit")
+        self.assertEqual(
+            clarification["issues"][0]["fieldPath"],
+            "inputs.BufferDistance",
+        )
+        try:
+            import jsonschema
+        except ImportError:
+            jsonschema = None
+        if jsonschema is not None:
+            schema_path = (
+                Path(__file__).resolve().parents[2]
+                / "spec"
+                / "ogc-clarification-request.schema.json"
+            )
+            jsonschema.Draft7Validator(
+                json.loads(schema_path.read_text(encoding="utf-8"))
+            ).validate(clarification)
+
+        updated = _call(
+            mcp,
+            "ogc_proxy_update_plan",
+            {
+                "plan_id": created["plan"]["plan_id"],
+                "execute_request_json": json.dumps(execute_request),
+                "input_context_json": json.dumps(
+                    {
+                        "BufferDistance": {
+                            "origin": "user",
+                            "unit": "server-native-unspecified",
+                            "confirmed": True,
+                            "note": "User explicitly accepted the server ambiguity.",
+                        }
+                    }
+                ),
+            },
+        )
+        self.assertFalse(updated["resolution_required"])
+        self.assertTrue(updated["confirmation_required"])
+        self.assertEqual(
+            updated["confirmation_prompt"]["input_context"]["BufferDistance"]["unit"],
+            "server-native-unspecified",
+        )
+        self.assertEqual(updated["plan"]["plan_id"], created["plan"]["plan_id"])
 
 
 if __name__ == "__main__":

@@ -69,6 +69,30 @@ export async function streamChat(
   }
 }
 
+export async function decidePlanApproval(
+  sessionId: string,
+  challengeId: string,
+  approved: boolean,
+): Promise<{ decision: "approved" | "rejected"; planId: string }> {
+  const response = await fetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(challengeId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved }),
+    },
+  );
+  const body = await response.json().catch(() => ({})) as {
+    error?: string;
+    decision?: "approved" | "rejected";
+    planId?: string;
+  };
+  if (!response.ok || !body.decision || !body.planId) {
+    throw new Error(body.error || `Approval request failed with status ${response.status}.`);
+  }
+  return { decision: body.decision, planId: body.planId };
+}
+
 export function subscribeSessionEvents(
   sessionId: string,
   onEvent: (event: StreamEvent) => void,

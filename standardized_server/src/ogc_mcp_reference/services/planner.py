@@ -54,10 +54,12 @@ class ProxyPlan:
     steps: tuple[dict[str, Any], ...]
     unresolved: tuple[dict[str, Any], ...] = ()
     execute_request: dict[str, Any] = field(default_factory=dict)
+    input_context: dict[str, Any] = field(default_factory=dict)
     sources: tuple[dict[str, Any], ...] = ()
     created_at: float = 0.0
     confirmed_at: float | None = None
     confirmation: dict[str, Any] = field(default_factory=dict)
+    execution: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,10 +70,12 @@ class ProxyPlan:
             "steps": list(self.steps),
             "unresolved": list(self.unresolved),
             "execute_request": self.execute_request,
+            "input_context": self.input_context,
             "sources": list(self.sources),
             "created_at": self.created_at,
             "confirmed_at": self.confirmed_at,
             "confirmation": self.confirmation,
+            "execution": self.execution,
             "requires_confirmation": self.status == "ready_for_confirmation",
         }
 
@@ -85,10 +89,12 @@ class ProxyPlan:
             steps=tuple(payload.get("steps", [])),
             unresolved=tuple(payload.get("unresolved", [])),
             execute_request=dict(payload.get("execute_request", {})),
+            input_context=dict(payload.get("input_context", {})),
             sources=tuple(payload.get("sources", [])),
             created_at=float(payload.get("created_at", 0.0)),
             confirmed_at=payload.get("confirmed_at"),
             confirmation=dict(payload.get("confirmation", {})),
+            execution=dict(payload.get("execution", {})),
         )
 
 
@@ -141,6 +147,10 @@ class ProxyPlanner:
 
         unresolved: list[dict[str, Any]] = []
         steps: list[dict[str, Any]] = []
+        input_context, input_context_errors = _normalize_input_context(
+            request.get("input_context", {})
+        )
+        unresolved.extend(input_context_errors)
         sources, source_shape_errors = _plan_sources_from_request(request, server_id)
         unresolved.extend(source_shape_errors)
 
@@ -164,7 +174,13 @@ class ProxyPlanner:
                     "validated": True,
                 }
             )
-            unresolved.extend(validate_execute_inputs(process_description, execute_request))
+            unresolved.extend(
+                validate_execute_inputs(
+                    process_description,
+                    execute_request,
+                    input_context=input_context,
+                )
+            )
 
         source_steps, source_unresolved = self._validate_sources(sources, execute_request)
         steps = source_steps + steps
@@ -179,6 +195,7 @@ class ProxyPlanner:
             steps=tuple(steps),
             unresolved=tuple(unresolved),
             execute_request=execute_request,
+            input_context=input_context,
             sources=tuple(source.to_dict() for source in sources),
             created_at=self._now(),
         )
@@ -274,13 +291,114 @@ class ProxyPlanner:
         except OgcMcpError:
             self._save(replace(plan, status="failed"))
             raise
-        self._save(replace(plan, status="completed"))
+        execution = _execution_record(result, plan.server_id, now=self._now())
+        if execution.get("asynchronous"):
+            next_status = (
+                "submitted"
+                if execution.get("tracking_state") == "available"
+                else "failed"
+            )
+        else:
+            next_status = "completed"
+        self._save(
+            replace(
+                plan,
+                status=next_status,
+                execution=execution,
+            )
+        )
         return result
+
+    def reconcile_job_status(
+        self,
+        job_id: str,
+        *,
+        server_id: str = "",
+        result: dict[str, Any],
+    ) -> list[str]:
+        """Reconcile stored async plans from a trusted OGC job-status response."""
+        clean_job_id = str(job_id).strip()
+        if not clean_job_id:
+            return []
+        reported_status = str(
+            _find_named_value(result.get("data"), {"status", "state"}) or "unknown"
+        ).strip()[:200]
+        normalized = reported_status.casefold()
+        if normalized in {"successful", "succeeded", "success", "finished", "complete", "completed"}:
+            plan_status = "completed"
+        elif normalized in {"failed", "error"}:
+            plan_status = "failed"
+        elif normalized in {"dismissed", "cancelled", "canceled"}:
+            plan_status = "cancelled"
+        else:
+            plan_status = "running"
+        return self._reconcile_job(
+            clean_job_id,
+            server_id=server_id,
+            plan_status=plan_status,
+            reported_status=reported_status,
+        )
+
+    def reconcile_job_results(
+        self,
+        job_id: str,
+        *,
+        server_id: str = "",
+    ) -> list[str]:
+        """Mark matching submitted plans completed after results are retrieved."""
+        return self._reconcile_job(
+            str(job_id).strip(),
+            server_id=server_id,
+            plan_status="completed",
+            reported_status="results_retrieved",
+        )
+
+    def _reconcile_job(
+        self,
+        job_id: str,
+        *,
+        server_id: str,
+        plan_status: str,
+        reported_status: str,
+    ) -> list[str]:
+        if not job_id:
+            return []
+        updated_ids: list[str] = []
+        for payload in self._store.list_values():
+            try:
+                plan = ProxyPlan.from_dict(payload)
+            except (KeyError, TypeError, ValueError):
+                continue
+            execution = plan.execution
+            if str(execution.get("job_id", "")) != job_id:
+                continue
+            execution_server = str(execution.get("server_id") or plan.server_id)
+            if server_id and execution_server != server_id:
+                continue
+            if plan.status not in {"submitted", "running"}:
+                continue
+            updated_execution = {
+                **execution,
+                "reported_status": reported_status,
+                "last_reconciled_at": self._now(),
+            }
+            if plan_status in {"completed", "failed", "cancelled"}:
+                updated_execution["completed_at"] = self._now()
+            self._save(
+                replace(
+                    plan,
+                    status=plan_status,
+                    execution=updated_execution,
+                )
+            )
+            updated_ids.append(plan.plan_id)
+        return updated_ids
 
     def update_plan(
         self,
         plan_id: str,
         execute_request: dict[str, Any],
+        input_context: dict[str, Any] | None = None,
     ) -> ProxyPlan:
         """Update the execute_request of a needs_resolution or ready_for_confirmation plan.
 
@@ -311,11 +429,20 @@ class ProxyPlanner:
             None,
         )
         process_id = str(process_step["process_id"]) if process_step else ""
+        normalized_input_context, input_context_errors = _normalize_input_context(
+            plan.input_context if input_context is None else input_context
+        )
 
         unresolved: list[dict[str, Any]] = _non_updatable_unresolved(plan.unresolved)
+        unresolved.extend(input_context_errors)
         if process_id:
             unresolved.extend(
-                self._validate_process_inputs(plan.server_id, process_id, execute_request)
+                self._validate_process_inputs(
+                    plan.server_id,
+                    process_id,
+                    execute_request,
+                    normalized_input_context,
+                )
             )
         elif not any(item.get("field") == "process_id" for item in unresolved):
             unresolved.append(
@@ -340,6 +467,7 @@ class ProxyPlanner:
         updated = replace(
             plan,
             execute_request=execute_request,
+            input_context=normalized_input_context,
             steps=tuple(steps),
             unresolved=tuple(unresolved),
             status=status,
@@ -381,18 +509,37 @@ class ProxyPlanner:
         server_id: str,
         process_id: str,
         execute_request: dict[str, Any],
+        input_context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Best-effort schema check; fails open if the description can't be fetched.
-
-        process_id has already been confirmed to exist in /processes at this
-        point, so a transient describe() failure here should not block
-        plan creation outright -- it just means this extra layer of input
-        validation is skipped for this plan.
-        """
+        """Validate against a fresh/cached schema and fail closed if unavailable."""
         process_description = self._load_process_description(server_id, process_id)
         if process_description is None:
-            return []
-        return validate_execute_inputs(process_description, execute_request)
+            return [
+                {
+                    "id": "process-schema-unavailable",
+                    "field": "process_schema",
+                    "kind": "input",
+                    "reason": (
+                        "The process description is temporarily unavailable, so "
+                        "the edited request cannot be validated safely."
+                    ),
+                    "question": (
+                        "Would you like me to retry validation of this process "
+                        "before asking for execution approval?"
+                    ),
+                    "why_it_matters": (
+                        "An edited request must be checked against the authoritative "
+                        "input schema before it can be approved."
+                    ),
+                    "allow_free_text": False,
+                    "retryable": True,
+                }
+            ]
+        return validate_execute_inputs(
+            process_description,
+            execute_request,
+            input_context=input_context,
+        )
 
     def _load_process_description(
         self,
@@ -625,6 +772,113 @@ def _effective_port(scheme: str, port: int | None) -> int | None:
     return None
 
 
+_INPUT_CONTEXT_ORIGINS = {
+    "user",
+    "service",
+    "operator",
+    "assumed",
+    "inferred",
+    "default",
+    "unknown",
+}
+
+
+def _normalize_input_context(
+    value: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Bound and normalize auditable input provenance supplied by the client."""
+    if value is None:
+        return {}, []
+    if not isinstance(value, dict):
+        return {}, [
+            {
+                "id": "input-context-shape",
+                "field": "input_context",
+                "kind": "input",
+                "reason": "input_context must be a JSON object keyed by process input ID.",
+                "question": "What provenance should be recorded for the process inputs?",
+                "why_it_matters": (
+                    "Input origin, units, and explicit acknowledgement must use a "
+                    "structured form so they can be audited before execution."
+                ),
+                "allow_free_text": True,
+            }
+        ]
+
+    normalized: dict[str, Any] = {}
+    issues: list[dict[str, Any]] = []
+    entries = list(value.items())
+    if len(entries) > 100:
+        issues.append(
+            {
+                "id": "input-context-count",
+                "field": "input_context",
+                "kind": "input",
+                "reason": "input_context contains more than 100 entries.",
+                "question": "Which input-context entries are required for this execution?",
+                "why_it_matters": "The plan context is intentionally bounded for safe review.",
+                "allow_free_text": True,
+            }
+        )
+
+    for raw_key, raw_context in entries[:100]:
+        key = str(raw_key).strip()[:300]
+        field = key if key.startswith("inputs.") else f"inputs.{key}"
+        if not key or not isinstance(raw_context, dict):
+            issues.append(
+                {
+                    "id": f"input-context-{len(issues) + 1}",
+                    "field": field if key else "input_context",
+                    "kind": "input",
+                    "reason": "Each input_context entry must be a JSON object.",
+                    "question": f"What provenance should be recorded for '{key or 'this input'}'?",
+                    "why_it_matters": (
+                        "The human-in-the-loop gate cannot audit an unstructured "
+                        "assumption record."
+                    ),
+                    "allow_free_text": True,
+                }
+            )
+            continue
+
+        origin = str(raw_context.get("origin") or "unknown").strip().casefold()
+        if origin not in _INPUT_CONTEXT_ORIGINS:
+            issues.append(
+                {
+                    "id": f"input-context-origin-{key}",
+                    "field": field,
+                    "kind": "input",
+                    "reason": (
+                        "input_context.origin must be one of: user, service, "
+                        "operator, assumed, inferred, default, or unknown."
+                    ),
+                    "question": f"Where did the proposed value for '{key}' come from?",
+                    "why_it_matters": (
+                        "The confirmation gate must distinguish user-supplied "
+                        "values from assumptions and service defaults."
+                    ),
+                    "allow_free_text": False,
+                    "options": [
+                        {"value": item, "label": item.replace("_", " ").title()}
+                        for item in sorted(_INPUT_CONTEXT_ORIGINS)
+                    ],
+                }
+            )
+            origin = "unknown"
+
+        context: dict[str, Any] = {
+            "origin": origin,
+            "confirmed": raw_context.get("confirmed") is True,
+        }
+        for context_key in ("unit", "crs", "note"):
+            candidate = raw_context.get(context_key)
+            if isinstance(candidate, str) and candidate.strip():
+                context[context_key] = candidate.strip()[:1000]
+        normalized[key.removeprefix("inputs.")] = context
+
+    return normalized, issues
+
+
 def _plan_sources_from_request(
     request: dict[str, Any],
     process_server_id: str,
@@ -754,6 +1008,131 @@ def _dedupe_unresolved(unresolved: list[dict[str, Any]]) -> list[dict[str, Any]]
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _find_named_value(
+    value: Any,
+    names: set[str],
+    *,
+    depth: int = 0,
+) -> Any:
+    if depth > 5:
+        return None
+    if isinstance(value, list):
+        for item in value[:100]:
+            found = _find_named_value(item, names, depth=depth + 1)
+            if found is not None:
+                return found
+        return None
+    if not isinstance(value, dict):
+        return None
+    for key, item in list(value.items())[:100]:
+        if str(key).casefold() in names:
+            return item
+    for item in list(value.values())[:100]:
+        found = _find_named_value(item, names, depth=depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _job_id_from_location(location: str) -> str:
+    if not location:
+        return ""
+    path = urlparse(location).path
+    segments = [unquote(item) for item in path.split("/") if item]
+    for index, segment in enumerate(segments):
+        if segment.casefold() == "jobs" and index + 1 < len(segments):
+            return segments[index + 1][:300]
+    return segments[-1][:300] if segments else ""
+
+
+def _execution_record(
+    result: dict[str, Any],
+    server_id: str,
+    *,
+    now: float,
+) -> dict[str, Any]:
+    response = result.get("response") if isinstance(result.get("response"), dict) else {}
+    guidance = result.get("guidance") if isinstance(result.get("guidance"), dict) else {}
+    manifest = (
+        result.get("output_manifest")
+        if isinstance(result.get("output_manifest"), dict)
+        else {}
+    )
+    manifest_execution = (
+        manifest.get("execution")
+        if isinstance(manifest.get("execution"), dict)
+        else {}
+    )
+    try:
+        status_code = int(response.get("status_code", 0))
+    except (TypeError, ValueError):
+        status_code = 0
+    location = str(guidance.get("location") or response.get("location") or "")[:2000]
+    reported_status = str(
+        _find_named_value(result.get("data"), {"status", "state"}) or ""
+    ).strip()[:200]
+    normalized_status = reported_status.casefold()
+    asynchronous = (
+        status_code in {201, 202}
+        or bool(location)
+        or manifest_execution.get("state") in {"submitted", "running"}
+        or normalized_status in {"accepted", "queued", "pending", "submitted", "running"}
+    )
+    job_id = str(
+        _find_named_value(result.get("data"), {"jobid", "job_id"})
+        or manifest_execution.get("jobId")
+        or manifest_execution.get("job_id")
+        or _job_id_from_location(location)
+        or ""
+    ).strip()[:300]
+    raw_tracking_state = str(manifest_execution.get("trackingState") or "").strip()
+    tracking_state = (
+        raw_tracking_state
+        if raw_tracking_state in {"available", "unavailable"}
+        else "available"
+        if asynchronous and (job_id or location)
+        else "unavailable"
+        if asynchronous
+        else ""
+    )
+    raw_tracking_error = manifest_execution.get("trackingError")
+    tracking_error = (
+        {
+            "code": str(raw_tracking_error.get("code") or "async_job_untrackable")[:200],
+            "message": str(
+                raw_tracking_error.get("message")
+                or "The asynchronous execution cannot be monitored."
+            )[:2000],
+        }
+        if isinstance(raw_tracking_error, dict)
+        else {
+            "code": "async_job_untrackable",
+            "message": (
+                "The upstream server accepted asynchronous execution without "
+                "returning a usable job identifier or Location."
+            ),
+        }
+        if asynchronous and tracking_state == "unavailable"
+        else {}
+    )
+    return {
+        "asynchronous": asynchronous,
+        "server_id": server_id,
+        "submitted_at": now,
+        **({"job_id": job_id} if job_id else {}),
+        **({"location": location} if location else {}),
+        **({"http_status": status_code} if status_code else {}),
+        **({"reported_status": reported_status} if reported_status else {}),
+        **({"tracking_state": tracking_state} if tracking_state else {}),
+        **({"tracking_error": tracking_error} if tracking_error else {}),
+        **(
+            {"completed_at": now}
+            if not asynchronous or tracking_state == "unavailable"
+            else {}
+        ),
+    }
 
 
 def _text(value: Any) -> str:

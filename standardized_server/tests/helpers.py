@@ -15,6 +15,7 @@ def build_registry(
     security: dict[str, Any] | None = None,
     limits: dict[str, Any] | None = None,
     auth: dict[str, Any] | None = None,
+    output_resolution: dict[str, Any] | None = None,
 ) -> ServerRegistry:
     return ServerRegistry(
         parse_settings(
@@ -35,6 +36,7 @@ def build_registry(
                         "security": security or {},
                         "limits": limits or {},
                         "auth": auth or {},
+                        "output_resolution": output_resolution or {},
                     }
                 ],
             }

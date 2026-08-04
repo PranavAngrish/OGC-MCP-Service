@@ -100,6 +100,29 @@ test("summarizeToolOutcome reports counts and human-in-the-loop state", () => {
   );
 });
 
+test("summarizeToolOutcome keeps execution, retrieval, interpretation, and map readiness distinct", () => {
+  const manifest = {
+    execution: { state: "succeeded" },
+    outputs: [{
+      retrieval: { state: "resolving" },
+      interpretation: { state: "pending" },
+      presentations: [{ kind: "map", state: "preparing" }],
+    }],
+  };
+  assert.equal(
+    summarizeToolOutcome("ogc_jobs_get_results", { ok: true }, false, manifest),
+    "Execution succeeded; 0/1 output retrieved, 0/1 interpreted, 0/1 map-ready.",
+  );
+  const ready = structuredClone(manifest);
+  ready.outputs[0].retrieval.state = "retrieved";
+  ready.outputs[0].interpretation.state = "recognized";
+  ready.outputs[0].presentations[0].state = "ready";
+  assert.equal(
+    summarizeToolOutcome("ogc_jobs_get_results", { ok: true }, false, ready),
+    "Execution succeeded; 1/1 output retrieved, 1/1 interpreted, 1/1 map-ready.",
+  );
+});
+
 test("summarizeToolOutcome redacts secrets from failures", () => {
   const summary = summarizeToolOutcome("ogc_processes_list", {
     ok: false,

@@ -20,7 +20,7 @@ DELAUNAY_DESCRIPTION = {
             },
         },
         "Tolerance": {
-            "title": "Tolerance",
+            "title": "Tolerance in pixels",
             "minOccurs": 0,
             "maxOccurs": 1,
             "schema": {"type": "number"},

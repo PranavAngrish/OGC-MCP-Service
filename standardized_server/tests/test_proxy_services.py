@@ -233,6 +233,159 @@ class ProxyServiceTests(unittest.TestCase):
             ],
         )
 
+    def test_planner_keeps_async_execution_submitted_until_job_reconciliation(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Delaunay" and request.method == "GET":
+                return httpx.Response(200, json={"id": "Delaunay", "inputs": {}})
+            if request.url.path == "/processes/Delaunay/execution":
+                return httpx.Response(
+                    202,
+                    headers={"Location": "/jobs/job-async-1"},
+                    json={"jobID": "job-async-1", "status": "accepted"},
+                )
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Delaunay",
+                "execute_request": {"inputs": {}},
+            }
+        )
+        planner.confirm_plan(plan.plan_id, approved=True)
+        planner.execute_plan(plan.plan_id, execution_mode="async")
+
+        submitted = planner.get_plan(plan.plan_id)
+        self.assertIsNotNone(submitted)
+        assert submitted is not None
+        self.assertEqual(submitted.status, "submitted")
+        self.assertTrue(submitted.execution["asynchronous"])
+        self.assertEqual(submitted.execution["job_id"], "job-async-1")
+
+        reconciled = planner.reconcile_job_status(
+            "job-async-1",
+            result={"data": {"status": "running"}},
+        )
+        self.assertEqual(reconciled, [plan.plan_id])
+        self.assertEqual(planner.get_plan(plan.plan_id).status, "running")  # type: ignore[union-attr]
+
+        reconciled = planner.reconcile_job_status(
+            "job-async-1",
+            result={"data": {"status": "successful"}},
+        )
+        self.assertEqual(reconciled, [plan.plan_id])
+        completed = planner.get_plan(plan.plan_id)
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.execution["reported_status"], "successful")
+        self.assertIn("completed_at", completed.execution)
+
+    def test_planner_terminalizes_an_untrackable_async_submission(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Delaunay" and request.method == "GET":
+                return httpx.Response(200, json={"id": "Delaunay", "inputs": {}})
+            if request.url.path == "/processes/Delaunay/execution":
+                return httpx.Response(202, json={"status": "accepted"})
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Delaunay",
+                "execute_request": {"inputs": {}},
+            }
+        )
+        planner.confirm_plan(plan.plan_id, approved=True)
+        result = planner.execute_plan(plan.plan_id, execution_mode="async")
+
+        self.assertEqual(result["output_manifest"]["overallState"], "unavailable")
+        stored = planner.get_plan(plan.plan_id)
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, "failed")
+        self.assertTrue(stored.execution["asynchronous"])
+        self.assertEqual(stored.execution["tracking_state"], "unavailable")
+        self.assertEqual(
+            stored.execution["tracking_error"]["code"],
+            "async_job_untrackable",
+        )
+        self.assertIn("completed_at", stored.execution)
+
+    def test_update_plan_fails_closed_when_process_schema_is_temporarily_unavailable(self) -> None:
+        class FlakyDescriptions:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def describe(self, _process_id: str, _server_id: str = "") -> dict:
+                self.calls += 1
+                if self.calls == 2:
+                    raise OgcMcpError(
+                        "upstream_response_error",
+                        "The process description is temporarily unavailable.",
+                    )
+                return {
+                    "ok": True,
+                    "data": {
+                        "id": "Buffer",
+                        "inputs": {
+                            "distance": {
+                                "minOccurs": 1,
+                                "title": "Distance (metres)",
+                                "schema": {"type": "number"},
+                            }
+                        },
+                    },
+                }
+
+        registry = build_registry()
+        client = OgcHttpClient(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(404, json={"detail": "missing"})
+            )
+        )
+        descriptions = FlakyDescriptions()
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+            process_descriptions=descriptions,  # type: ignore[arg-type]
+        )
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Buffer",
+                "execute_request": {"inputs": {"distance": 10}},
+            }
+        )
+        self.assertEqual(plan.status, "ready_for_confirmation")
+
+        unavailable = planner.update_plan(
+            plan.plan_id,
+            {"inputs": {"distance": 20}},
+        )
+        self.assertEqual(unavailable.status, "needs_resolution")
+        self.assertEqual(unavailable.unresolved[0]["field"], "process_schema")
+        self.assertTrue(unavailable.unresolved[0]["retryable"])
+
+        recovered = planner.update_plan(
+            plan.plan_id,
+            {"inputs": {"distance": 20}},
+        )
+        self.assertEqual(recovered.status, "ready_for_confirmation")
+        self.assertEqual(recovered.unresolved, ())
+
     def test_planner_reuses_cached_process_description(self) -> None:
         calls: list[tuple[str, str]] = []
 
@@ -724,6 +877,152 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertEqual(plan.status, "needs_resolution")
         self.assertEqual(plan.unresolved[0]["field"], "inputs.Radius")
         self.assertEqual(plan.unresolved[0]["expected_type"], "number")
+
+    def test_planner_blocks_undeclared_distance_unit_until_user_context(self) -> None:
+        execute_request = {"inputs": {"BufferDistance": 0.5}}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Buffer" and request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "Buffer",
+                        "inputs": {
+                            "BufferDistance": {
+                                "title": "Buffer distance",
+                                "minOccurs": 1,
+                                "schema": {"type": "number"},
+                            }
+                        },
+                    },
+                )
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Buffer",
+                "execute_request": execute_request,
+            }
+        )
+
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["kind"], "unit")
+        self.assertEqual(plan.unresolved[0]["field"], "inputs.BufferDistance")
+        self.assertIn("What unit", plan.unresolved[0]["question"])
+
+        updated = planner.update_plan(
+            plan.plan_id,
+            execute_request,
+            input_context={
+                "BufferDistance": {
+                    "origin": "user",
+                    "unit": "kilometres",
+                    "confirmed": True,
+                }
+            },
+        )
+        self.assertEqual(updated.status, "ready_for_confirmation")
+        self.assertEqual(updated.input_context["BufferDistance"]["unit"], "kilometres")
+        self.assertTrue(updated.input_context["BufferDistance"]["confirmed"])
+
+    def test_planner_blocks_unconfirmed_assumption_context(self) -> None:
+        execute_request = {"inputs": {"Method": "nearest"}}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Classify" and request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "Classify",
+                        "inputs": {
+                            "Method": {
+                                "title": "Classification method",
+                                "minOccurs": 1,
+                                "schema": {"type": "string"},
+                            }
+                        },
+                    },
+                )
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Classify",
+                "execute_request": execute_request,
+                "input_context": {
+                    "Method": {
+                        "origin": "inferred",
+                        "confirmed": False,
+                        "note": "Selected by the model",
+                    }
+                },
+            }
+        )
+        self.assertEqual(plan.status, "needs_resolution")
+        self.assertEqual(plan.unresolved[0]["kind"], "input")
+        self.assertIn("inferred", plan.unresolved[0]["reason"])
+
+        updated = planner.update_plan(
+            plan.plan_id,
+            execute_request,
+            input_context={
+                "Method": {
+                    "origin": "inferred",
+                    "confirmed": True,
+                    "note": "Explicitly accepted by the user",
+                }
+            },
+        )
+        self.assertEqual(updated.status, "ready_for_confirmation")
+
+    def test_planner_accepts_unit_advertised_in_input_title(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/processes/Buffer" and request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "Buffer",
+                        "inputs": {
+                            "Radius": {
+                                "title": "Radius in meters",
+                                "minOccurs": 1,
+                                "schema": {"type": "number"},
+                            }
+                        },
+                    },
+                )
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Buffer",
+                "execute_request": {"inputs": {"Radius": 250}},
+            }
+        )
+        self.assertEqual(plan.status, "ready_for_confirmation")
 
     def test_planner_persists_through_injected_store_across_instances(self) -> None:
         """Simulates two workers sharing one external store (e.g. Redis)."""

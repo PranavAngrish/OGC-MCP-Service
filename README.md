@@ -8,6 +8,8 @@ The project has two main artifacts:
 
 - `spec/ogc-mcp-mapping.json`: an early mapping specification for representing
   OGC API operations as MCP tools.
+- `spec/ogc-output-manifest.schema.json`: the versioned contract that separates
+  process execution, output retrieval, interpretation, and presentation.
 - `standardized_server/`: a Python FastMCP reference server with a stable
   `ogc_*` tool surface, operator-owned server registry, human-confirmed process
   execution workflow, proxy memory handles, and deterministic tests.
@@ -28,6 +30,8 @@ This bridge gives MCP clients a structured way to:
 - create auditable process execution plans;
 - require explicit human approval before execution;
 - keep large upstream responses outside model context behind memory handles;
+- resolve and normalize inline or referenced process outputs into auditable
+  artifacts for maps, tables, metrics, documents, and downloads;
 - prevent the model from choosing arbitrary outbound URLs or handling secrets.
 
 ## Documentation
@@ -44,6 +48,7 @@ For implementation and operations:
 
 - [Tool Contract](./standardized_server/docs/TOOL_CONTRACT.md)
 - [Proxy Workflow](./standardized_server/docs/PROXY_WORKFLOW.md)
+- [Process Output Artifacts](./standardized_server/docs/OUTPUT_ARTIFACTS.md)
 - [Configuration](./standardized_server/docs/CONFIGURATION.md)
 - [Security Model](./standardized_server/docs/SECURITY.md)
 - [Development Guide](./standardized_server/docs/DEVELOPMENT.md)
@@ -82,7 +87,8 @@ The tests use mocked HTTP transports and do not require public network access.
 
 The [`ui/`](./ui/) application provides a polished chat interface, streamed
 progress summaries and MCP tool activity, automatic background-job updates,
-interactive geospatial result maps, and a server-side Gemini gateway using
+fingerprint-bound human approval cards, interactive geospatial result maps, and
+a server-side Gemini gateway using
 Gemini's OpenAI-compatible API with this MCP server over stdio.
 
 ```bash
@@ -100,7 +106,10 @@ See the [UI README](./ui/README.md) for architecture and production notes.
 ```text
 gsoc-mcp/
 |-- spec/
-|   `-- ogc-mcp-mapping.json
+|   |-- ogc-mcp-mapping.json
+|   |-- ogc-output-manifest.schema.json
+|   |-- ogc-workflow-event.schema.json
+|   `-- ogc-clarification-request.schema.json
 |-- standardized_server/
 |   |-- config.example.json
 |   |-- docs/
@@ -123,6 +132,8 @@ The reference server implements:
 - OGC API - Processes discovery, jobs, and confirmation-gated execution;
 - optional direct process execution, disabled by default;
 - response summary mode and proxy memory handles;
+- canonical process-output manifests, opaque artifact handles, format
+  adapters, and secure output-reference resolution;
 - in-memory and Redis-backed plan/memory stores;
 - JWT bearer, bearer token, API key, basic auth, and no-auth profiles;
 - structured error envelopes and a deterministic unittest suite.

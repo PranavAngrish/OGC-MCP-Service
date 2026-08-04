@@ -50,6 +50,28 @@ class RequestLimits:
 
 
 @dataclass(frozen=True)
+class OutputResolutionPolicy:
+    """Security and resource policy for resolving process output references.
+
+    Same-origin references are enabled because the server base URL is already
+    operator controlled. Cross-origin references remain disabled until their
+    hosts are explicitly allowlisted. Authentication is never forwarded to a
+    different origin.
+    """
+
+    enabled: bool = True
+    allow_same_origin: bool = True
+    allowed_hosts: tuple[str, ...] = ()
+    allow_private_networks: bool = False
+    allow_insecure_redirects: bool = False
+    max_redirects: int = 3
+    max_resolution_seconds: float = 60.0
+    max_response_bytes: int = 5_000_000
+    max_outputs: int = 20
+    inline_preview_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class ServerProfile:
     """Operator-approved OGC API deployment."""
 
@@ -64,6 +86,7 @@ class ServerProfile:
     auth: AuthProfile = field(default_factory=AuthProfile)
     security: SecurityPolicy = field(default_factory=SecurityPolicy)
     limits: RequestLimits = field(default_factory=RequestLimits)
+    output_resolution: OutputResolutionPolicy = field(default_factory=OutputResolutionPolicy)
 
     def path(self, name: str, fallback: str) -> str:
         return self.paths.get(name, fallback)
@@ -89,6 +112,7 @@ class StoreSettings:
     key_prefix: str = "ogc_mcp"
     plan_ttl_seconds: int = 3600
     memory_ttl_seconds: int = 1800
+    artifact_ttl_seconds: int = 1800
 
 
 @dataclass(frozen=True)
@@ -127,6 +151,8 @@ class OgcResponse:
     headers: dict[str, str]
     content_type: str
     data: Any
+    body: bytes = b""
+    redirect_count: int = 0
 
     @property
     def location(self) -> str:

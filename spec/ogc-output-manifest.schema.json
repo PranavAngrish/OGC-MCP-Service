@@ -1,0 +1,588 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://52north.org/ogc-mcp/output-manifest/v1/schema.json",
+  "title": "OGC MCP Output Manifest",
+  "description": "A versioned, model-safe description of process execution, output retrieval, interpretation, stored representations, and available presentations.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "manifestId",
+    "execution",
+    "overallState",
+    "outputs"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "ogc-output-manifest/1"
+    },
+    "manifestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "execution": {
+      "$ref": "#/definitions/execution"
+    },
+    "overallState": {
+      "enum": [
+        "pending",
+        "ready",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "outputs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/definitions/output"
+      }
+    },
+    "warnings": {
+      "$ref": "#/definitions/warnings"
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "execution": {
+      "type": "object",
+      "required": [
+        "state",
+        "serverId"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "awaiting_input",
+            "awaiting_approval",
+            "submitted",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "serverId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "processId": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "planId": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "jobId": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "reportedStatus": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "trackingState": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "trackingError": {
+          "$ref": "#/definitions/error"
+        }
+      },
+      "additionalProperties": true
+    },
+    "output": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "status",
+        "retrieval",
+        "interpretation",
+        "presentations",
+        "provenance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "ready",
+            "partial",
+            "empty",
+            "unresolved",
+            "blocked",
+            "unsupported",
+            "failed"
+          ]
+        },
+        "retrieval": {
+          "$ref": "#/definitions/retrieval"
+        },
+        "interpretation": {
+          "$ref": "#/definitions/interpretation"
+        },
+        "representations": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/definitions/representation"
+          }
+        },
+        "presentations": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/definitions/presentation"
+          }
+        },
+        "provenance": {
+          "$ref": "#/definitions/provenance"
+        },
+        "warnings": {
+          "$ref": "#/definitions/warnings"
+        },
+        "clarificationRequest": {
+          "$ref": "#/definitions/clarificationRequest"
+        }
+      },
+      "additionalProperties": true
+    },
+    "retrieval": {
+      "type": "object",
+      "required": [
+        "state",
+        "source"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "resolving",
+            "retrieved",
+            "partial",
+            "failed",
+            "blocked"
+          ]
+        },
+        "source": {
+          "enum": [
+            "inline",
+            "reference",
+            "memory"
+          ]
+        },
+        "declaredMediaType": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "detectedMediaType": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "httpStatus": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "redirectCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "$ref": "#/definitions/error"
+        }
+      },
+      "additionalProperties": true
+    },
+    "interpretation": {
+      "type": "object",
+      "required": [
+        "state",
+        "semanticType"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "recognized",
+            "ambiguous",
+            "unsupported",
+            "failed"
+          ]
+        },
+        "semanticType": {
+          "enum": [
+            "vector",
+            "raster",
+            "coverage",
+            "tiles",
+            "table",
+            "timeseries",
+            "scalar",
+            "image",
+            "document",
+            "binary",
+            "unknown"
+          ]
+        },
+        "format": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "crs": {
+          "$ref": "#/definitions/crs"
+        },
+        "bbox": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number"
+          }
+        },
+        "featureCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rowCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "geometryTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "units": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/definitions/unit"
+          }
+        },
+        "warnings": {
+          "$ref": "#/definitions/warnings"
+        },
+        "error": {
+          "$ref": "#/definitions/error"
+        }
+      },
+      "additionalProperties": true
+    },
+    "crs": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "value": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "status": {
+          "enum": [
+            "declared",
+            "inferred",
+            "missing",
+            "unsupported"
+          ]
+        },
+        "axisOrder": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "nativeValue": {
+          "type": "string",
+          "maxLength": 300
+        }
+      },
+      "additionalProperties": true
+    },
+    "unit": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "quantity": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "status": {
+          "enum": [
+            "declared",
+            "missing"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "representation": {
+      "type": "object",
+      "required": [
+        "id",
+        "role",
+        "mediaType"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "role": {
+          "enum": [
+            "original",
+            "canonical",
+            "preview",
+            "tiles"
+          ]
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "handle": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 8192
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "encoding": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "data": {}
+      },
+      "additionalProperties": true
+    },
+    "presentation": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "kind": {
+          "enum": [
+            "map",
+            "table",
+            "chart",
+            "metric",
+            "image",
+            "text",
+            "download"
+          ]
+        },
+        "state": {
+          "enum": [
+            "preparing",
+            "ready",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "artifactRef": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": true
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "serverId"
+      ],
+      "properties": {
+        "serverId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "requestPath": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "retrievedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "parser": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "transformations": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "phase": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "clarificationRequest": {
+      "type": "object",
+      "required": [
+        "blocking",
+        "scope",
+        "issues"
+      ],
+      "properties": {
+        "blocking": {
+          "type": "boolean"
+        },
+        "scope": {
+          "enum": [
+            "execution",
+            "interpretation",
+            "presentation"
+          ]
+        },
+        "issues": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/definitions/clarificationIssue"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "clarificationIssue": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "fieldPath",
+        "question",
+        "whyItMatters"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "kind": {
+          "enum": [
+            "unit",
+            "crs",
+            "axis_order",
+            "input",
+            "output_format",
+            "presentation",
+            "remote_fetch"
+          ]
+        },
+        "fieldPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "whyItMatters": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "observedValue": {},
+        "allowFreeText": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      }
+    }
+  }
+}

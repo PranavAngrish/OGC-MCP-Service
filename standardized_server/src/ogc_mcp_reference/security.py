@@ -14,6 +14,13 @@ def _is_private_hostname(hostname: str) -> bool:
     lowered = hostname.lower().rstrip(".")
     if lowered == "localhost" or lowered.endswith(".localhost"):
         return True
+    if lowered in {
+        "metadata",
+        "metadata.google.internal",
+        "instance-data",
+        "instance-data.ec2.internal",
+    }:
+        return True
     try:
         address = ipaddress.ip_address(lowered)
     except ValueError:

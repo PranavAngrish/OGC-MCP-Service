@@ -6,11 +6,13 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlsplit
 
 from ..errors import OgcMcpError, UpstreamResponseError
+from ..artifacts import ArtifactStore, OutputArtifactPipeline
 from ..models import OgcResponse, ServerProfile
 from ..registry import ServerRegistry
 from ..result import success
 from ..security import validate_execute_references
 from ..transport import OgcHttpClient
+from ..services.store import InMemoryStore
 
 
 _PROCESS_PAGE_SIZE = 100
@@ -43,9 +45,19 @@ def _execution_prefer(execution_mode: str, wait_seconds: int) -> str:
 class ProcessesService:
     """Execute advertised processes and follow asynchronous jobs."""
 
-    def __init__(self, registry: ServerRegistry, client: OgcHttpClient) -> None:
+    def __init__(
+        self,
+        registry: ServerRegistry,
+        client: OgcHttpClient,
+        *,
+        output_artifacts: OutputArtifactPipeline | None = None,
+    ) -> None:
         self._registry = registry
         self._client = client
+        self._output_artifacts = output_artifacts or OutputArtifactPipeline(
+            client=client,
+            store=ArtifactStore(store=InMemoryStore()),
+        )
 
     @staticmethod
     def _next_page_query(data: Any) -> dict[str, str] | None:
@@ -259,7 +271,15 @@ class ProcessesService:
                 "location": response.location,
                 "usage": "Extract the job ID from the response body or Location header for async follow-up.",
             }
-        return success("processes.execute", server, response, guidance=guidance)
+        result = success("processes.execute", server, response, guidance=guidance)
+        result["output_manifest"] = self._output_artifacts.build(
+            response,
+            server=server,
+            operation="processes.execute",
+            process_id=process_id,
+            execute_request=execute_request,
+        )
+        return result
 
     def list_jobs(
         self,
@@ -295,7 +315,14 @@ class ProcessesService:
         server = self._registry.get(server_id, service="processes")
         path = f"{server.path('jobs', '/jobs')}/{_segment(job_id)}/results"
         response = self._client.request(server, "GET", path, query={"f": "json"})
-        return success("jobs.get_results", server, response)
+        result = success("jobs.get_results", server, response)
+        result["output_manifest"] = self._output_artifacts.build(
+            response,
+            server=server,
+            operation="jobs.get_results",
+            job_id=job_id,
+        )
+        return result
 
     def dismiss_job(self, job_id: str, server_id: str = "") -> dict[str, Any]:
         server = self._registry.get(server_id, service="processes")

@@ -19,6 +19,7 @@ the reference server.
 | --- | --- |
 | [Tool Contract](TOOL_CONTRACT.md) | Which MCP tools exist and how they map to OGC concepts. |
 | [Proxy Workflow](PROXY_WORKFLOW.md) | How process execution is planned, resolved, confirmed, and executed. |
+| [Process Output Artifacts](OUTPUT_ARTIFACTS.md) | How inline and referenced outputs are resolved, interpreted, stored, and presented. |
 | [Configuration](CONFIGURATION.md) | How to configure servers, defaults, auth, security, limits, stores, and policy. |
 | [Security Model](SECURITY.md) | Which boundaries protect credentials, upstream targets, references, and execution. |
 | [Development Guide](DEVELOPMENT.md) | How to work on the implementation safely. |
@@ -44,5 +45,8 @@ the reference server.
 | --- | --- |
 | [`../spec/ogc-mcp-tool-contract.json`](../spec/ogc-mcp-tool-contract.json) | Experimental tool contract implemented by this server. |
 | [`../../spec/ogc-mcp-mapping.json`](../../spec/ogc-mcp-mapping.json) | Early mapping specification for OGC APIs to MCP concepts. |
+| [`../../spec/ogc-output-manifest.schema.json`](../../spec/ogc-output-manifest.schema.json) | Versioned contract for execution, retrieval, interpretation, and presentation state. |
+| [`../../spec/ogc-workflow-event.schema.json`](../../spec/ogc-workflow-event.schema.json) | Ordered activity and background-workflow event contract. |
+| [`../../spec/ogc-clarification-request.schema.json`](../../spec/ogc-clarification-request.schema.json) | Structured human-in-the-loop ambiguity contract. |
 | [`../schemas/server-config.schema.json`](../schemas/server-config.schema.json) | JSON Schema for operator configuration files. |
 | [`../config.example.json`](../config.example.json) | Example server configuration. |

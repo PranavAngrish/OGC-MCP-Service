@@ -16,6 +16,7 @@ The browser never receives the Gemini API key or starts the MCP process itself.
 ```text
 React browser
   -> POST /api/chat (SSE response)
+  -> POST /api/sessions/:id/approvals/:challenge (explicit human decision)
   -> GET /api/sessions/:id/events (background-job SSE)
   -> Node gateway
      -> Gemini OpenAI-compatible Chat Completions API
@@ -29,6 +30,11 @@ executes requested calls through the official MCP client, returns tool output to
 the same conversation, and streams safe progress events to the browser. The
 OpenAI SDK is configured with Gemini's compatibility `baseURL`; the provider is
 Gemini, not OpenAI.
+
+`ogc_proxy_confirm_plan` is deliberately absent from Gemini's tool list. A
+validated plan produces a browser approval card containing the exact request
+and its fingerprint. The gateway re-fetches that plan before applying the
+one-time user decision, then automatically starts a continuation turn.
 
 ## Setup
 
@@ -95,7 +101,7 @@ The renderer supports these result forms:
 | GeoJSON Feature, FeatureCollection, or Geometry | Points, lines, and polygon fill/outline layers, including multi-geometries and geometry collections. Dense point sets use a heatmap layer. |
 | Explicit longitude/latitude objects | Point features with their remaining fields available in the feature details panel. |
 | Bounding boxes | An extent polygon used for display and initial map framing. |
-| WKT geometry | Supported geometry text is converted into a vector layer. |
+| WKT geometry | Geometry with an explicit supported CRS/SRID is converted into a vector layer. CRS-less WKT remains downloadable and asks for clarification. |
 | Small numeric grids with an extent | Grid cells become a heatmap layer. Units and descriptive fields remain visible alongside the map. |
 | Georeferenced PNG/JPEG or XYZ tile references | An optional remote layer. The browser loads it only after the user explicitly enables it. |
 | GeoTIFF/COG and other spatial references | A safe reference/download card. A production tile service is needed before MapLibre can display these formats directly. |
@@ -107,10 +113,15 @@ the original answer can finish while the job continues. A successful job
 automatically triggers `ogc_jobs_get_results`, bounded memory hydration, and a
 map update on the original assistant message. Failed, dismissed, and timed-out
 jobs become visible status rows instead of silently disappearing.
+Successful status responses whose artifacts are still marked retryable are
+also retried within the same bounded result window. An async response without a
+trackable job ID is shown as unavailable instead of loading forever.
 
 Pure statistics without geometry are left to the textual answer instead of
-being placed on a misleading map. Ambiguous coordinate arrays are also left
-unmapped unless their surrounding output declares their geometry semantics.
+being placed on a misleading map. Ambiguous coordinate arrays and generic
+`x`/`y` columns are also left unmapped unless their surrounding output declares
+their geometry semantics. Their structured clarification questions appear with
+the retained table or download.
 
 GeoJSON is interpreted as CRS84 longitude/latitude. Explicit EPSG:3857 geometry
 is reprojected to CRS84; coordinates in any other unknown or unsupported
@@ -118,13 +129,17 @@ projected CRS are not guessed. Result normalization is bounded
 by feature/vertex/layer limits, and the card reports warnings when it has to
 truncate or skip content. Properties are rendered as text, never as HTML.
 
-The example environment uses MapLibre's public demo style so local validation
-shows geographic context immediately. Set `VITE_MAP_STYLE_URL` to a trusted
-MapLibre style at build time for deployment, or leave it empty to use the
-network-free dark canvas when location privacy takes priority. Production
-deployments should configure a tile provider and attribution appropriate to
-their privacy policy and expected traffic. Result-controlled raster and tile
-URLs are never loaded automatically; users must explicitly enable each layer.
+When `VITE_MAP_STYLE_URL` is omitted, the UI uses MapLibre's public demo style
+so local validation shows geographic context immediately. Set it to a trusted
+MapLibre style at build time for deployment, or define it with an empty value
+to use the network-free privacy canvas. A remote style that errors or does not
+load its initial sources and tiles within the bounded readiness window falls
+back once to that local canvas; the UI
+then reports the basemap as unavailable without blocking validated result
+layers. Production deployments should configure a tile provider and
+attribution appropriate to their privacy policy and expected traffic.
+Result-controlled raster and tile URLs are never loaded automatically; users
+must explicitly enable each layer.
 
 ## Environment variables
 
@@ -139,7 +154,9 @@ URLs are never loaded automatically; users must explicitly enable each layer.
 | `UI_GATEWAY_PORT` | `8787` | Gateway and production UI port. |
 | `OGC_JOB_POLL_INTERVAL_MS` | `3000` | Interval for checking confirmed background jobs (clamped to 1–60 seconds). |
 | `OGC_JOB_MONITOR_TIMEOUT_MS` | `1800000` | Maximum background monitoring duration (clamped to 30 seconds–24 hours). |
-| `VITE_MAP_STYLE_URL` | MapLibre demo style in `.env.example` | Trusted MapLibre style URL compiled into the browser app; leave empty for the network-free canvas. |
+| `OGC_JOB_RESULT_RETRY_INTERVAL_MS` | `1500` | Delay between bounded result-publication retries after a job reports success (clamped to 0.25–60 seconds). |
+| `OGC_JOB_RESULT_TIMEOUT_MS` | `60000` | Maximum time spent waiting for a successful job's result endpoint to become ready (clamped to 1 second–10 minutes). |
+| `VITE_MAP_STYLE_URL` | MapLibre public demo style when omitted | Trusted MapLibre style URL compiled into the browser app; define it as empty for the network-free privacy canvas. |
 
 For a smooth migration, the gateway also accepts a key from the legacy
 `OPENAI_API_KEY` variable, but new environments should use `GEMINI_API_KEY`.

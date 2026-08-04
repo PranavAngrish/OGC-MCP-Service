@@ -87,21 +87,6 @@ type ResultMapProps = {
 const VECTOR_COLORS = ["#b9e66c", "#70d6ad", "#f2a765", "#8cb8ff", "#dca6ff"];
 const MAX_VISIBLE_PROPERTIES = 40;
 const MAX_PROPERTY_LENGTH = 700;
-const PRIVATE_IPV4_RANGES: Array<[number, number]> = [
-  [0x00000000, 0x00ffffff],
-  [0x0a000000, 0x0affffff],
-  [0x64400000, 0x647fffff],
-  [0x7f000000, 0x7fffffff],
-  [0xa9fe0000, 0xa9feffff],
-  [0xac100000, 0xac1fffff],
-  [0xc0000000, 0xc00000ff],
-  [0xc0000200, 0xc00002ff],
-  [0xc0a80000, 0xc0a8ffff],
-  [0xc6120000, 0xc613ffff],
-  [0xc6336400, 0xc63364ff],
-  [0xcb007100, 0xcb0071ff],
-  [0xe0000000, 0xffffffff],
-];
 
 const GEOMETRY_TYPES = new Set([
   "Point",
@@ -114,6 +99,10 @@ const GEOMETRY_TYPES = new Set([
 ]);
 
 let mapInstanceSequence = 0;
+const DEFAULT_BASEMAP_STYLE_URL = "https://demotiles.maplibre.org/style.json";
+const MAP_STYLE_LOAD_TIMEOUT_MS = 8_000;
+const BASEMAP_RESOURCE_TIMEOUT_MS = 5_000;
+const LOCAL_CANVAS_LOAD_TIMEOUT_MS = 2_500;
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -339,9 +328,23 @@ function createDefaultStyle() {
   };
 }
 
-function configuredMapStyle(): string | ReturnType<typeof createDefaultStyle> {
+type MapStyleConfiguration = {
+  mode: "configured" | "default" | "privacy";
+  style: string | ReturnType<typeof createDefaultStyle>;
+};
+
+function configuredMapStyle(): MapStyleConfiguration {
   const environment = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  return environment?.VITE_MAP_STYLE_URL?.trim() || createDefaultStyle();
+  const explicitlyConfigured = Boolean(
+    environment && Object.prototype.hasOwnProperty.call(environment, "VITE_MAP_STYLE_URL"),
+  );
+  if (explicitlyConfigured) {
+    const configured = environment?.VITE_MAP_STYLE_URL?.trim();
+    return configured
+      ? { mode: "configured", style: configured }
+      : { mode: "privacy", style: createDefaultStyle() };
+  }
+  return { mode: "default", style: DEFAULT_BASEMAP_STYLE_URL };
 }
 
 function escapeAttribution(value: string | undefined): string | undefined {
@@ -354,32 +357,18 @@ function escapeAttribution(value: string | undefined): string | undefined {
     .replaceAll("'", "&#039;");
 }
 
-function ipv4Value(hostname: string): number | undefined {
-  const octets = hostname.split(".");
-  if (octets.length !== 4 || octets.some((part) => !/^\d{1,3}$/.test(part))) return undefined;
-  const values = octets.map(Number);
-  if (values.some((part) => part < 0 || part > 255)) return undefined;
-  return (((values[0] << 24) >>> 0) + (values[1] << 16) + (values[2] << 8) + values[3]) >>> 0;
-}
-
-function isPrivateHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
-  // URL parsers canonicalize IPv4-mapped loopback addresses such as
-  // ::ffff:127.0.0.1 to ::ffff:7f00:1. Reject the entire IPv4-compatible
-  // prefix so alternate spellings cannot bypass the IPv4 range checks.
-  if (host.startsWith("::") || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) {
-    return true;
-  }
-  const ipv4 = ipv4Value(host);
-  return ipv4 !== undefined && PRIVATE_IPV4_RANGES.some(([start, end]) => ipv4 >= start && ipv4 <= end);
-}
-
 function safeRemoteUrl(value: string | undefined): URL | undefined {
   if (!value) return undefined;
   try {
-    const parsed = new URL(value);
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || isPrivateHostname(parsed.hostname)) {
+    const base = typeof window === "undefined" ? "https://local.invalid/" : window.location.href;
+    const parsed = new URL(value, base);
+    const sameOrigin = parsed.origin === new URL(base).origin;
+    if (
+      !["http:", "https:"].includes(parsed.protocol)
+      || parsed.username
+      || parsed.password
+      || !sameOrigin
+    ) {
       return undefined;
     }
     return parsed;
@@ -414,7 +403,21 @@ function formatRemoteLocation(value: string | undefined): string {
 }
 
 function layerCanRender(layer: NormalizedLayer): boolean {
-  if (layer.kind === "vector" || layer.kind === "heatmap") return Boolean(layer.data);
+  if (layer.kind === "vector" || layer.kind === "heatmap") {
+    return Boolean(layer.data?.features.some((feature) => {
+      let drawable = false;
+      visitGeometry(feature.geometry, (geometry) => {
+        if (geometry.type === "GeometryCollection") return;
+        if (layer.kind === "heatmap" && !["Point", "MultiPoint"].includes(geometry.type)) return;
+        walkCoordinatePairs(geometry.coordinates, (longitude, latitude) => {
+          if (longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90) {
+            drawable = true;
+          }
+        });
+      });
+      return drawable;
+    }));
+  }
   if (layer.kind === "raster") return Boolean(safeRemoteUrl(layer.href) && layer.bounds);
   if (layer.kind === "tiles") return Boolean(safeTileTemplate(layer.href));
   return false;
@@ -630,6 +633,9 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
   const renderedIdLabels = useRef(new Map<string, string>());
   const [mapReady, setMapReady] = useState(false);
   const [mapLoading, setMapLoading] = useState(true);
+  const [basemapState, setBasemapState] = useState<"loading" | "ready" | "privacy" | "unavailable">("loading");
+  const [renderedResultLayerCount, setRenderedResultLayerCount] = useState(0);
+  const [initialLayersProcessed, setInitialLayersProcessed] = useState(false);
   const [fatalError, setFatalError] = useState<string>();
   const [mapWarnings, setMapWarnings] = useState<string[]>([]);
   const [selectedFeature, setSelectedFeature] = useState<SelectedFeature>();
@@ -642,6 +648,10 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
   const referenceLayers = normalized.layers.filter((layer) => layer.kind === "reference");
   const exportableLayers = vectorLayers.filter((layer) => layer.data);
   const hasMappableLayer = normalized.layers.some(layerCanRender);
+  const visibleRenderedLayerCount = normalized.layers.filter((layer) =>
+    visibleLayers.has(layer.key)
+    && (renderedLayerIds.current.get(layer.key)?.length || 0) > 0
+  ).length;
   const inspectableFeatures = useMemo(() => normalized.layers
     .filter((layer) => (layer.kind === "vector" || layer.kind === "heatmap") && layer.data)
     .flatMap((layer) => (layer.data?.features || []).map((feature) => ({ feature, layer: layer.label })))
@@ -652,6 +662,8 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
     setLoadedRemoteLayers(new Set());
     setLoadingRemoteLayer(undefined);
     setSelectedFeature(undefined);
+    setRenderedResultLayerCount(0);
+    setInitialLayersProcessed(false);
   }, [normalized]);
 
   useEffect(() => {
@@ -659,11 +671,17 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
     if (!hasMappableLayer) {
       setMapReady(false);
       setMapLoading(false);
+      setBasemapState("unavailable");
+      setRenderedResultLayerCount(0);
+      setInitialLayersProcessed(true);
       setFatalError(undefined);
       return undefined;
     }
     setMapReady(false);
     setMapLoading(true);
+    setBasemapState("loading");
+    setRenderedResultLayerCount(0);
+    setInitialLayersProcessed(false);
     setFatalError(undefined);
     setMapWarnings([]);
     renderedLayerIds.current.clear();
@@ -674,13 +692,14 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
     let styleFallbackAttempted = false;
     let baseStyleReady = false;
     let resultLayersAdded = false;
-    const configuredStyle = configuredMapStyle();
-    const hasConfiguredStyle = typeof configuredStyle === "string";
+    let styleWatchdog: number | undefined;
+    const styleConfiguration = configuredMapStyle();
+    const usesRemoteStyle = styleConfiguration.mode !== "privacy";
 
     try {
       const map = new maplibregl.Map({
         container: mapNode.current,
-        style: configuredStyle,
+        style: styleConfiguration.style,
         center: [0, 18],
         zoom: 1.25,
         minZoom: 0,
@@ -696,49 +715,132 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
         if (disposed) return;
         setMapWarnings((current) => current.includes(message) ? current : [...current, message].slice(-3));
       };
+      const clearStyleWatchdog = () => {
+        if (styleWatchdog !== undefined) {
+          window.clearTimeout(styleWatchdog);
+          styleWatchdog = undefined;
+        }
+      };
+      const scheduleLocalCanvasWatchdog = () => {
+        clearStyleWatchdog();
+        styleWatchdog = window.setTimeout(() => {
+          styleWatchdog = undefined;
+          if (disposed || baseStyleReady) return;
+          setMapReady(false);
+          setMapLoading(false);
+          setBasemapState("unavailable");
+          setFatalError("The local map canvas could not become ready. Result metadata and downloads remain available.");
+        }, LOCAL_CANVAS_LOAD_TIMEOUT_MS);
+      };
+      const fallbackToSafeCanvas = (reason: string): boolean => {
+        if (disposed || !usesRemoteStyle || styleFallbackAttempted) return false;
+        styleFallbackAttempted = true;
+        clearStyleWatchdog();
+        baseStyleReady = false;
+        resultLayersAdded = false;
+        renderedLayerIds.current.clear();
+        interactiveLayerIds.current = [];
+        renderedIdLabels.current.clear();
+        setRenderedResultLayerCount(0);
+        setInitialLayersProcessed(false);
+        setMapReady(false);
+        setMapLoading(true);
+        setBasemapState("unavailable");
+        appendMapWarning(`${reason} Results are shown on the local privacy canvas without basemap context.`);
+        try {
+          map.setStyle(createDefaultStyle());
+          if (!baseStyleReady) scheduleLocalCanvasWatchdog();
+          return true;
+        } catch (error) {
+          const detail = error instanceof Error
+            ? sanitizeMapError(error.message)
+            : "The local map canvas could not be initialized.";
+          setFatalError(detail);
+          setMapLoading(false);
+          return false;
+        }
+      };
 
-      map.on("error", (event) => {
+      if (styleConfiguration.mode === "privacy") {
+        appendMapWarning("Basemap network access is disabled by configuration. Results are shown on the local privacy canvas.");
+        scheduleLocalCanvasWatchdog();
+      } else {
+        styleWatchdog = window.setTimeout(() => {
+          fallbackToSafeCanvas("The basemap did not become ready within 8 seconds.");
+        }, MAP_STYLE_LOAD_TIMEOUT_MS);
+      }
+
+      const onMapError = (event: maplibregl.ErrorEvent) => {
         const detail = event.error instanceof Error
           ? sanitizeMapError(event.error.message)
           : "A map resource could not be loaded.";
-        if (hasConfiguredStyle && !baseStyleReady && !styleFallbackAttempted) {
-          styleFallbackAttempted = true;
-          appendMapWarning("The configured map style failed to load, so the built-in private canvas is being used instead.");
-          try {
-            map.setStyle(createDefaultStyle());
-            return;
-          } catch {
-            // The general map error below provides the recoverable UI state.
-          }
+        const eventRecord = event as unknown as JsonRecord;
+        const sourceId = optionalString(eventRecord.sourceId)
+          || optionalString(isRecord(eventRecord.source) ? eventRecord.source.id : undefined);
+        const resultSourceIds = new Set(remoteLayers.map((layer) => layer.sourceId));
+        if (sourceId && resultSourceIds.has(sourceId)) {
+          appendMapWarning(detail || "A remote result layer could not be loaded.");
+          return;
+        }
+        if (fallbackToSafeCanvas(
+          baseStyleReady
+            ? "A basemap tile or source failed to load."
+            : "The basemap style failed to load.",
+        )) {
+          return;
         }
         appendMapWarning(detail || "A map resource could not be loaded.");
-      });
+      };
 
       const addInitialLayers = () => {
         if (disposed || resultLayersAdded) return;
         resultLayersAdded = true;
+        let renderedResults = 0;
         for (const layer of vectorLayers) {
           if (!layerCanRender(layer)) continue;
           try {
             const added = addLayerToMap(map, layer, namespace);
             renderedLayerIds.current.set(layer.key, added.rendered);
+            if (added.rendered.length > 0) renderedResults += 1;
             interactiveLayerIds.current.push(...added.interactive);
             for (const id of added.interactive) renderedIdLabels.current.set(id, layer.label);
           } catch (error) {
             appendMapWarning(`${layer.label}: ${(error as Error).message}`);
           }
         }
-        fitMap(map, normalized.bounds, false);
+        if (renderedResults > 0) fitMap(map, normalized.bounds, false);
+        setRenderedResultLayerCount(renderedResults);
+        setInitialLayersProcessed(true);
         setMapReady(true);
         setMapLoading(false);
       };
 
-      map.on("load", addInitialLayers);
-      map.on("style.load", () => {
+      const onStyleLoad = () => {
         baseStyleReady = true;
+        clearStyleWatchdog();
+        if (styleFallbackAttempted) {
+          setBasemapState("unavailable");
+        } else if (styleConfiguration.mode === "privacy") {
+          setBasemapState("privacy");
+        } else {
+          setBasemapState("loading");
+          styleWatchdog = window.setTimeout(() => {
+            fallbackToSafeCanvas("The basemap sources did not become ready within 5 seconds.");
+          }, BASEMAP_RESOURCE_TIMEOUT_MS);
+        }
         if (!resultLayersAdded && map.isStyleLoaded()) addInitialLayers();
-      });
-      map.on("click", (event) => {
+      };
+      const onMapIdle = () => {
+        if (
+          disposed
+          || !baseStyleReady
+          || styleFallbackAttempted
+          || styleConfiguration.mode === "privacy"
+        ) return;
+        clearStyleWatchdog();
+        setBasemapState("ready");
+      };
+      const onMapClick = (event: maplibregl.MapMouseEvent) => {
         const ids = interactiveLayerIds.current.filter((id) => Boolean(map.getLayer(id)));
         if (!ids.length) {
           setSelectedFeature(undefined);
@@ -751,20 +853,35 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
           return;
         }
         setSelectedFeature(selectedFeatureFromData(feature, renderedIdLabels.current.get(feature.layer.id) || "Result layer"));
-      });
-      map.on("mousemove", (event) => {
+      };
+      const onMapMouseMove = (event: maplibregl.MapMouseEvent) => {
         const ids = interactiveLayerIds.current.filter((id) => Boolean(map.getLayer(id)));
         map.getCanvas().style.cursor = ids.length && map.queryRenderedFeatures(event.point, { layers: ids }).length
           ? "pointer"
           : "";
-      });
+      };
+
+      map.on("error", onMapError);
+      map.on("load", addInitialLayers);
+      map.on("style.load", onStyleLoad);
+      map.on("idle", onMapIdle);
+      map.on("click", onMapClick);
+      map.on("mousemove", onMapMouseMove);
+      if (map.isStyleLoaded()) onStyleLoad();
 
       const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => map.resize());
       if (resizeObserver && mapNode.current) resizeObserver.observe(mapNode.current);
 
       return () => {
         disposed = true;
+        clearStyleWatchdog();
         resizeObserver?.disconnect();
+        map.off("error", onMapError);
+        map.off("load", addInitialLayers);
+        map.off("style.load", onStyleLoad);
+        map.off("idle", onMapIdle);
+        map.off("click", onMapClick);
+        map.off("mousemove", onMapMouseMove);
         mapRef.current = null;
         renderedLayerIds.current.clear();
         interactiveLayerIds.current = [];
@@ -772,7 +889,21 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
         map.remove();
       };
     } catch (error) {
-      setFatalError(`The interactive map could not be started: ${(error as Error).message}`);
+      if (styleWatchdog !== undefined) window.clearTimeout(styleWatchdog);
+      try {
+        mapRef.current?.remove();
+      } catch {
+        // Preserve the original initialization error in the visible fallback.
+      }
+      const detail = error instanceof Error
+        ? sanitizeMapError(error.message)
+        : "The browser could not initialize the map engine.";
+      setFatalError(
+        detail
+          ? `The interactive map could not be started in this browser: ${detail}`
+          : "The interactive map could not be started in this browser.",
+      );
+      setBasemapState("unavailable");
       setMapLoading(false);
       mapRef.current = null;
       return undefined;
@@ -800,12 +931,16 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
     if (!map || !mapReady || loadingRemoteLayer) return;
     setLoadingRemoteLayer(layer.key);
     try {
+      const wasLoaded = renderedLayerIds.current.has(layer.key);
       const added = addLayerToMap(map, layer, namespace);
       renderedLayerIds.current.set(layer.key, added.rendered);
       interactiveLayerIds.current.push(...added.interactive);
       for (const id of added.interactive) renderedIdLabels.current.set(id, layer.label);
       setLoadedRemoteLayers((current) => new Set(current).add(layer.key));
       setVisibleLayers((current) => new Set(current).add(layer.key));
+      if (added.rendered.length > 0 && !wasLoaded) {
+        setRenderedResultLayerCount((current) => current + 1);
+      }
       if (layer.bounds) fitMap(map, layer.bounds);
     } catch (error) {
       const message = `${layer.label}: ${(error as Error).message}`;
@@ -847,7 +982,11 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
   return (
     <section className={`result-map ${className || ""}`} aria-label={`Map: ${normalized.title}`}>
       <span className="result-map__sr-status" aria-live="polite">
-        {mapReady ? `Map loaded with ${normalized.featureCount} features.` : "Preparing map."}
+        {visibleRenderedLayerCount > 0
+          ? `Result map ready with ${visibleRenderedLayerCount} visible result ${visibleRenderedLayerCount === 1 ? "layer" : "layers"} and ${normalized.featureCount} features.`
+          : mapReady
+            ? "The map engine is ready, but no result layer is rendered."
+            : "Preparing the map engine."}
       </span>
       <header className="result-map__header">
         <div className="result-map__heading">
@@ -860,7 +999,7 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
             type="button"
             className="result-map__button"
             onClick={() => mapRef.current && fitMap(mapRef.current, normalized.bounds)}
-            disabled={!mapReady || !normalized.bounds}
+            disabled={!mapReady || visibleRenderedLayerCount === 0 || !normalized.bounds}
             title="Fit the map to all result data"
           >
             <LocateFixed size={14} /> Fit results
@@ -880,7 +1019,15 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
       <div className="result-map__stats" aria-label="Result statistics">
         <span><strong>{formatCount(normalized.featureCount)}</strong> features</span>
         <span><strong>{formatCount(normalized.coordinateCount)}</strong> coordinates</span>
-        <span><strong>{normalized.layers.length}</strong> layers</span>
+        <span><strong>{visibleRenderedLayerCount}</strong> visible result {visibleRenderedLayerCount === 1 ? "layer" : "layers"}</span>
+        {renderedResultLayerCount !== visibleRenderedLayerCount && (
+          <span><strong>{renderedResultLayerCount}</strong> loaded</span>
+        )}
+        <span>
+          Basemap · <strong>
+            {basemapState === "privacy" ? "privacy canvas" : basemapState}
+          </strong>
+        </span>
         {Object.entries(normalized.geometryTypes).slice(0, 4).map(([geometry, count]) => (
           <span className="result-map__geometry-stat" key={geometry}>{geometryLabel(geometry)} · {formatCount(count)}</span>
         ))}
@@ -900,7 +1047,7 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
           <div ref={mapNode} className="result-map__canvas" aria-label="Interactive geospatial result map" />
           {mapLoading && !fatalError && (
             <div className="result-map__loading" role="status">
-              <span className="result-map__spinner" /> Preparing map
+              <span className="result-map__spinner" /> Preparing map engine
             </div>
           )}
           {fatalError && (
@@ -918,7 +1065,32 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
               <span>Use the reference downloads to inspect this process output.</span>
             </div>
           )}
-          {hasMappableLayer && !fatalError && <div className="result-map__map-hint">Scroll + ⌘/Ctrl to zoom</div>}
+          {!mapLoading
+            && !fatalError
+            && hasMappableLayer
+            && initialLayersProcessed
+            && renderedResultLayerCount === 0 && (
+            <div className="result-map__empty-map" role="status">
+              <Layers size={20} />
+              <strong>{remoteLayers.some(layerCanRender) ? "Result layer not loaded yet" : "No result layer could be rendered"}</strong>
+              <span>
+                {remoteLayers.some(layerCanRender)
+                  ? "Use the Layers panel to load the validated remote result. The basemap alone is not treated as a completed map."
+                  : "The map remains covered because zero validated output layers were added."}
+              </span>
+            </div>
+          )}
+          {!mapLoading
+            && !fatalError
+            && renderedResultLayerCount > 0
+            && visibleRenderedLayerCount === 0 && (
+            <div className="result-map__empty-map" role="status">
+              <EyeOff size={20} />
+              <strong>All result layers are hidden</strong>
+              <span>Show a layer in the Layers panel to restore the result map.</span>
+            </div>
+          )}
+          {visibleRenderedLayerCount > 0 && !fatalError && <div className="result-map__map-hint">Scroll + ⌘/Ctrl to zoom</div>}
         </div>
 
         <aside className="result-map__sidebar" aria-label="Map layers and feature details">
@@ -1055,7 +1227,10 @@ export default function ResultMap({ visualization, className }: ResultMapProps) 
           )}
 
           <div className="result-map__ready-note">
-            <Check size={12} /> {normalized.crs} · interactive preview
+            {visibleRenderedLayerCount > 0 ? <Check size={12} /> : <AlertTriangle size={12} />}
+            {normalized.crs} · {visibleRenderedLayerCount > 0
+              ? `${visibleRenderedLayerCount} result ${visibleRenderedLayerCount === 1 ? "layer" : "layers"} visible`
+              : "0 result layers rendered"}
           </div>
         </aside>
       </div>

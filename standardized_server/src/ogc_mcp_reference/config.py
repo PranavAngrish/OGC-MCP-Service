@@ -13,6 +13,7 @@ from .models import (
     SUPPORTED_SERVICES,
     SUPPORTED_STORE_BACKENDS,
     AuthProfile,
+    OutputResolutionPolicy,
     RegistrySettings,
     RequestLimits,
     SecurityPolicy,
@@ -55,6 +56,39 @@ def _as_positive_int(value: Any, label: str, *, default: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConfigurationError(f"{label} must be a positive integer.")
     return value
+
+
+def _as_bounded_positive_int(
+    value: Any,
+    label: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    result = _as_positive_int(value, label, default=default)
+    if result > maximum:
+        raise ConfigurationError(f"{label} must be at most {maximum}.")
+    return result
+
+
+def _as_nonnegative_int(value: Any, label: str, *, default: int) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ConfigurationError(f"{label} must be a non-negative integer.")
+    return value
+
+
+def _as_positive_float(value: Any, label: str, *, default: float) -> float:
+    if value is None:
+        return default
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or float(value) <= 0
+    ):
+        raise ConfigurationError(f"{label} must be a positive number.")
+    return float(value)
 
 
 def _as_ttl_seconds(value: Any, label: str, *, default: int) -> int:
@@ -130,6 +164,60 @@ def _load_limits(value: Any, server_id: str) -> RequestLimits:
     )
 
 
+def _load_output_resolution(value: Any, server_id: str) -> OutputResolutionPolicy:
+    raw = _as_object(value, f"servers.{server_id}.output_resolution")
+    return OutputResolutionPolicy(
+        enabled=_as_bool(
+            raw.get("enabled"),
+            f"servers.{server_id}.output_resolution.enabled",
+            default=True,
+        ),
+        allow_same_origin=_as_bool(
+            raw.get("allow_same_origin"),
+            f"servers.{server_id}.output_resolution.allow_same_origin",
+            default=True,
+        ),
+        allowed_hosts=_as_string_tuple(
+            raw.get("allowed_hosts", []),
+            f"servers.{server_id}.output_resolution.allowed_hosts",
+        ),
+        allow_private_networks=_as_bool(
+            raw.get("allow_private_networks"),
+            f"servers.{server_id}.output_resolution.allow_private_networks",
+        ),
+        allow_insecure_redirects=_as_bool(
+            raw.get("allow_insecure_redirects"),
+            f"servers.{server_id}.output_resolution.allow_insecure_redirects",
+        ),
+        max_redirects=_as_positive_int(
+            raw.get("max_redirects"),
+            f"servers.{server_id}.output_resolution.max_redirects",
+            default=3,
+        ),
+        max_resolution_seconds=_as_positive_float(
+            raw.get("max_resolution_seconds"),
+            f"servers.{server_id}.output_resolution.max_resolution_seconds",
+            default=60.0,
+        ),
+        max_response_bytes=_as_positive_int(
+            raw.get("max_response_bytes"),
+            f"servers.{server_id}.output_resolution.max_response_bytes",
+            default=5_000_000,
+        ),
+        max_outputs=_as_bounded_positive_int(
+            raw.get("max_outputs"),
+            f"servers.{server_id}.output_resolution.max_outputs",
+            default=20,
+            maximum=100,
+        ),
+        inline_preview_bytes=_as_nonnegative_int(
+            raw.get("inline_preview_bytes"),
+            f"servers.{server_id}.output_resolution.inline_preview_bytes",
+            default=0,
+        ),
+    )
+
+
 def _load_store(value: Any) -> StoreSettings:
     raw = _as_object(value, "store")
     backend = str(raw.get("backend", "memory"))
@@ -146,6 +234,9 @@ def _load_store(value: Any) -> StoreSettings:
         ),
         memory_ttl_seconds=_as_ttl_seconds(
             raw.get("memory_ttl_seconds"), "store.memory_ttl_seconds", default=1800
+        ),
+        artifact_ttl_seconds=_as_ttl_seconds(
+            raw.get("artifact_ttl_seconds"), "store.artifact_ttl_seconds", default=1800
         ),
     )
 
@@ -199,6 +290,7 @@ def _load_server(raw: Any, index: int) -> ServerProfile:
         auth=_load_auth(raw.get("auth"), server_id),
         security=_load_security(raw.get("security"), server_id),
         limits=_load_limits(raw.get("limits"), server_id),
+        output_resolution=_load_output_resolution(raw.get("output_resolution"), server_id),
     )
 
 

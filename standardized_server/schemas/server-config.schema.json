@@ -79,6 +79,9 @@
         },
         "limits": {
           "$ref": "#/$defs/limits"
+        },
+        "output_resolution": {
+          "$ref": "#/$defs/output_resolution"
         }
       },
       "additionalProperties": false
@@ -166,6 +169,67 @@
       },
       "additionalProperties": false
     },
+    "output_resolution": {
+      "type": "object",
+      "description": "Policy for resolving, bounding, interpreting, and previewing process output references. Same-origin references are enabled by default; cross-origin hosts require an explicit allowlist.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "allow_same_origin": {
+          "type": "boolean",
+          "default": true
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "allow_private_networks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also requires security.allow_private_networks=true."
+        },
+        "allow_insecure_redirects": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow HTTPS output references to redirect to HTTP. Keep disabled unless an operator has accepted the downgrade risk."
+        },
+        "max_redirects": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        },
+        "max_resolution_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 60,
+          "description": "Aggregate wall-clock time permitted while resolving every output reference and redirect in one manifest."
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5000000,
+          "description": "Aggregate decoded bytes permitted across every output reference and redirect response in one manifest."
+        },
+        "max_outputs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "inline_preview_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Maximum bounded preview bytes embedded directly in output_manifest. The model-safe default is 0; clients should hydrate opaque art_* handles privately."
+        }
+      },
+      "additionalProperties": false
+    },
     "store": {
       "type": "object",
       "description": "Pluggable backend for proxy plan and proxy-memory state. backend=\"memory\" (default) is process-local and only correct for a single-worker stdio deployment. backend=\"redis\" is required for a multi-worker or multi-replica streamable-http deployment.",
@@ -193,6 +257,12 @@
           "minimum": 0,
           "default": 1800,
           "description": "0 disables expiry."
+        },
+        "artifact_ttl_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1800,
+          "description": "TTL for opaque original/canonical process-output artifacts. 0 disables expiry."
         }
       },
       "additionalProperties": false

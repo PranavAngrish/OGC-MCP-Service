@@ -32,6 +32,13 @@ Most successful OGC operations return:
 }
 ```
 
+Process execution and job-result operations additionally return
+`output_manifest`, conforming to
+[`../../spec/ogc-output-manifest.schema.json`](../../spec/ogc-output-manifest.schema.json).
+The manifest is additive: `data` remains for compatible clients, while new
+clients use the manifest to distinguish execution, retrieval, interpretation,
+and presentation states.
+
 Expected failures return:
 
 ```json
@@ -106,6 +113,17 @@ as-is.
 
 Callers should pass non-negative offsets and positive limits.
 
+### `ogc_proxy_artifact_retrieve`
+
+Retrieves one opaque `art_*` representation referenced by an
+`output_manifest`. This is a trusted renderer/download capability rather than a
+general model tool. Terra hydrates it in the gateway, keeps coordinate arrays
+out of model messages, and exposes a download only after the handle is
+registered for that browser session.
+
+Artifact handles are expiring bearer capabilities. Shared deployments must add
+principal scoping and authorization at the MCP boundary.
+
 ### `ogc_proxy_create_plan`
 
 Creates a stored process execution plan. The request must use:
@@ -123,10 +141,16 @@ Creates a stored process execution plan. The request must use:
 The planner validates the process description, declared sources, and simple
 execute-input problems before execution is possible.
 
+Optional `input_context` is keyed by the exact process input ID and records the
+origin, unit, CRS, note, and human-confirmation state of material values. It
+lets the planner distinguish user input from assumptions.
+
 ### `ogc_proxy_update_plan`
 
 Updates the `execute_request` for a plan that is in `needs_resolution` or
-`ready_for_confirmation`. This preserves the `plan_id` and revalidates the plan.
+`ready_for_confirmation`. `input_context_json` may update the corresponding
+assumption, unit, and CRS facts. This preserves the `plan_id` and revalidates
+the plan.
 
 ### `ogc_proxy_get_plan`
 
@@ -235,9 +259,13 @@ Retrieves one job status.
 
 ### `ogc_jobs_get_results`
 
-Retrieves job results. Summary mode is the default.
+Retrieves job results. Summary mode is the default. Completed responses include
+`output_manifest`; referenced results are resolved only through the
+operator-owned output-resolution policy.
 
 ### `ogc_jobs_dismiss`
 
-Cancels or deletes a job where supported by the upstream server. It is always
-registered because stopping work is lower risk than starting process execution.
+Cancels or deletes a job where supported by the upstream server. Like direct
+execution, this state-changing interoperability tool is registered only when
+`policy.expose_direct_execution_tools=true`. A user-facing client must still
+require an explicit request naming the job to cancel.

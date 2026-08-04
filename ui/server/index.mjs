@@ -3,9 +3,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { agentStatus, clearSession, runAgentTurn } from "./agent.mjs";
+import { decideApproval } from "./approvals.mjs";
 import { subscribeSessionEvents } from "./background-jobs.mjs";
 import { publicGatewayError } from "./errors.mjs";
-import { listMcpTools } from "./mcp-client.mjs";
+import { callMcpTool, listMcpTools } from "./mcp-client.mjs";
+import { retrieveSessionArtifact } from "./result-artifacts.mjs";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const uiDirectory = path.resolve(directory, "..");
@@ -60,6 +62,61 @@ app.get("/api/sessions/:sessionId/events", (request, response) => {
     clearInterval(heartbeat);
     unsubscribe();
   });
+});
+
+app.post("/api/sessions/:sessionId/approvals/:challengeId", async (request, response) => {
+  const sessionId = request.params.sessionId;
+  const challengeId = request.params.challengeId;
+  if (
+    !sessionId
+    || sessionId.length > 200
+    || !/^[0-9a-f-]{36}$/i.test(challengeId)
+    || typeof request.body?.approved !== "boolean"
+  ) {
+    response.status(400).json({
+      error: "A valid session challenge and an explicit boolean decision are required.",
+    });
+    return;
+  }
+  const result = await decideApproval({
+    sessionId,
+    challengeId,
+    approved: request.body.approved,
+    callTool: callMcpTool,
+  });
+  response.status(result.status).json(
+    result.ok
+      ? result
+      : { ok: false, error: result.error },
+  );
+});
+
+app.get("/api/artifacts/:handle", async (request, response) => {
+  const sessionId = typeof request.query.sessionId === "string" ? request.query.sessionId : "";
+  const handle = request.params.handle;
+  if (!sessionId || sessionId.length > 200 || !/^art_[a-f0-9]{32}$/.test(handle)) {
+    response.status(400).json({ error: "A valid session-scoped artifact handle is required." });
+    return;
+  }
+  const artifact = await retrieveSessionArtifact({
+    sessionId,
+    handle,
+    callTool: callMcpTool,
+  });
+  if (!artifact.ok) {
+    response.status(artifact.status).json({ error: artifact.error });
+    return;
+  }
+  response.status(200);
+  response.setHeader("Content-Type", artifact.mediaType);
+  const safeInlineImage = /^image\/(?:png|jpeg|webp|gif|avif)(?:;|$)/i.test(artifact.mediaType);
+  response.setHeader(
+    "Content-Disposition",
+    `${safeInlineImage ? "inline" : "attachment"}; filename="${artifact.filename}"`,
+  );
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.send(artifact.data);
 });
 
 app.post("/api/chat", async (request, response) => {

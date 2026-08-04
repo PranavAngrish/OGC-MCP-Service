@@ -5,6 +5,7 @@ export const MAP_SOURCE_TOOLS = new Set([
   "ogc_processes_execute",
   "ogc_proxy_execute_plan",
   "ogc_proxy_memory_retrieve",
+  "ogc_proxy_artifact_retrieve",
   "ogc_common_get_resource",
   "ogc_features_get_items",
   "ogc_features_get_item",

@@ -1,8 +1,16 @@
-import type { Activity, ActivityStatus, StreamEvent } from "../types";
+import type {
+  Activity,
+  ActivityStatus,
+  ArtifactWorkflowStage,
+  OutputArtifact,
+  OutputManifestV1,
+  StreamEvent,
+} from "../types";
 
 export type ActivityFact = {
   label: string;
   value: string;
+  meta?: string;
 };
 
 export type ActivityPanelState = "working" | "waiting" | "complete" | "issues" | "stopped";
@@ -50,6 +58,52 @@ const warningValues = (value: unknown): string[] | undefined => {
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     .slice(0, 8);
   return warnings.length ? warnings : undefined;
+};
+
+const artifactActivityStatus = (value: unknown): ActivityStatus => {
+  const state = String(value || "").toLowerCase();
+  if (["pending", "preparing", "resolving", "running", "submitted", "monitoring"].includes(state)) {
+    return "running";
+  }
+  if (["awaiting_input", "awaiting_approval", "unresolved", "ambiguous"].includes(state)) {
+    return "waiting";
+  }
+  if (["failed", "blocked", "unsupported", "unavailable"].includes(state)) return "error";
+  if (["cancelled", "stopped"].includes(state)) return "cancelled";
+  return "complete";
+};
+
+const artifactStageTitle = (value: unknown): string => {
+  const stage = String(value || "presentation");
+  const titles: Record<string, string> = {
+    execution: "Checking process execution",
+    submitted: "Analysis submitted",
+    monitoring: "Monitoring the analysis",
+    retrieval: "Retrieving process output",
+    detection: "Detecting output format",
+    interpretation: "Understanding output data",
+    conversion: "Preparing a compatible preview",
+    presentation: "Preparing output presentation",
+    storage: "Securing the output artifact",
+    complete: "Output preparation complete",
+  };
+  return titles[stage] || stage.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+};
+
+const artifactStagePurpose = (stage: string): string => {
+  const purposes: Record<string, string> = {
+    execution: "Separate the process execution state from output retrieval and presentation readiness.",
+    submitted: "Record the submitted process and begin tracking its output.",
+    monitoring: "Wait for the background process to reach a final execution state.",
+    retrieval: "Retrieve the actual process output, including any controlled output reference.",
+    detection: "Compare advertised media types with the returned content and identify its real format.",
+    interpretation: "Parse the retrieved value into a known semantic output such as vector data, a table, or a scalar.",
+    conversion: "Create a bounded browser-safe representation while preserving the original artifact.",
+    presentation: "Select a suitable renderer and verify that it has valid content to display.",
+    storage: "Store the original or converted output behind a controlled artifact reference.",
+    complete: "Publish the verified output manifest to the answer.",
+  };
+  return purposes[stage] || "Advance the output through the verified artifact pipeline.";
 };
 
 export function resultNeedsUser(result: unknown): boolean {
@@ -184,6 +238,115 @@ export function updateActivities(current: Activity[], event: StreamEvent): Activ
     return upsertActivity(current, activity);
   }
 
+  if (event.event === "artifact_status") {
+    const manifestId = String(data.manifestId || "manifest");
+    const outputId = String(data.outputId || "output");
+    const stage = String(data.stage || "presentation") as ArtifactWorkflowStage;
+    const state = String(data.status || "running");
+    const detail = stringValue(data.detail);
+    const status = artifactActivityStatus(state);
+    const activity: Activity = {
+      id: `artifact-${String(data.activityId || `${manifestId}-${outputId}`)}-${stage}`,
+      kind: "artifact",
+      title: artifactStageTitle(stage),
+      detail,
+      toolName: "output_artifact",
+      arguments: {
+        output: outputId,
+        stage,
+        manifest: manifestId,
+      },
+      purpose: artifactStagePurpose(stage),
+      outputSummary: detail || `Artifact stage: ${state.replaceAll("_", " ")}.`,
+      result: { manifestId, outputId, stage, state, detail },
+      status,
+      artifactStage: stage,
+      manifestId,
+      outputId,
+      startedAt: stringValue(data.startedAt || data.timestamp),
+      completedAt: status === "running" ? undefined : stringValue(data.timestamp),
+    };
+    const updated = upsertActivity(current, activity);
+    const manifestSummaryId = `artifact-${manifestId}-${outputId}-manifest`;
+    const summary = updated.find((item) => item.id === manifestSummaryId);
+    return summary
+      ? [...updated.filter((item) => item.id !== manifestSummaryId), summary]
+      : updated;
+  }
+
+  if (event.event === "output_manifest") {
+    const manifest = asRecord(data.manifest) as OutputManifestV1 | null;
+    if (!manifest || manifest.schemaVersion !== "ogc-output-manifest/1" || !Array.isArray(manifest.outputs)) {
+      return current;
+    }
+    return manifest.outputs.reduce((activities, outputValue) => {
+      const output = outputValue as OutputArtifact;
+      const status = artifactActivityStatus(output.status);
+      const readyPresentations = Array.isArray(output.presentations)
+        ? output.presentations.filter((presentation) => ["ready", "partial"].includes(presentation.state)).length
+        : 0;
+      const warnings = [
+        ...(Array.isArray(output.interpretation?.warnings) ? output.interpretation.warnings : []),
+        ...(Array.isArray(output.warnings) ? output.warnings : []),
+      ].slice(0, 8);
+      const activity: Activity = {
+        id: `artifact-${manifest.manifestId}-${output.id}-manifest`,
+        kind: "artifact",
+        title: status === "complete" ? `Output ready: ${output.title}` : `Output update: ${output.title}`,
+        toolName: "output_artifact",
+        purpose: "Publish the verified output, its interpretation, and every available presentation.",
+        outputSummary: readyPresentations
+          ? `${readyPresentations} verified ${readyPresentations === 1 ? "presentation is" : "presentations are"} ready.`
+          : "The output is retained, but no browser presentation is ready.",
+        arguments: {
+          server: manifest.execution.serverId,
+          process: manifest.execution.processId,
+          job: manifest.execution.jobId,
+          output: output.id,
+        },
+        result: {
+          status: output.status,
+          retrieval: output.retrieval,
+          interpretation: output.interpretation,
+          presentations: output.presentations,
+        },
+        warnings: warnings.length ? warnings : undefined,
+        status,
+        artifactStage: "complete",
+        manifestId: manifest.manifestId,
+        outputId: output.id,
+        completedAt: stringValue(data.timestamp),
+      };
+      return upsertActivity(activities, activity);
+    }, current);
+  }
+
+  if (event.event === "workflow_event") {
+    const workflow = asRecord(data.event) || data;
+    if (workflow.schemaVersion !== "activity/2") return current;
+    const payload = asRecord(workflow.payload) || {};
+    const type = String(workflow.type || "step_started");
+    const status = type === "workflow_failed"
+      ? "error"
+      : ["clarification_required", "approval_required"].includes(type)
+        ? "waiting"
+        : ["workflow_completed", "step_completed", "intent_recognized", "decision_recorded", "output_manifest_upserted"].includes(type)
+          ? "complete"
+          : type === "step_started" || type === "job_progress" || type === "presentation_status"
+            ? artifactActivityStatus(payload.status || "running")
+            : artifactActivityStatus(payload.status);
+    const activity: Activity = {
+      id: String(workflow.activityId || workflow.eventId),
+      kind: type === "decision_recorded" ? "reasoning" : "status",
+      title: String(payload.title || type.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase())),
+      detail: stringValue(payload.detail || payload.summary),
+      status,
+      startedAt: stringValue(workflow.timestamp),
+      completedAt: ["complete", "error", "cancelled"].includes(status) ? stringValue(workflow.timestamp) : undefined,
+    };
+    return upsertActivity(current, activity);
+  }
+
   return current;
 }
 
@@ -222,6 +385,11 @@ const labelAliases: Record<string, string> = {
   BufferDistance: "Buffer distance",
   InputPolygon: "Input polygon",
   InputPoints: "Input points",
+  origin: "Input origin",
+  units: "Units",
+  unit: "Unit",
+  crs: "CRS",
+  axisOrder: "Axis order",
 };
 
 function displayLabel(path: string[]): string {
@@ -313,6 +481,33 @@ function collectFacts(
   if (parsed === null || typeof parsed !== "object") {
     facts.push({ label: displayLabel(path), value: compactValue(parsed) });
     return;
+  }
+  if (!Array.isArray(parsed)) {
+    const annotated = parsed as Record<string, unknown>;
+    const annotationKeys = ["origin", "source", "units", "unit", "crs"];
+    if ("value" in annotated && annotationKeys.some((annotation) => annotated[annotation] !== undefined)) {
+      const originLabels: Record<string, string> = {
+        user: "User supplied",
+        server_default: "Server default",
+        system_proposed: "Suggested by Terra",
+        derived: "Derived from an earlier output",
+        missing: "Still missing",
+      };
+      const origin = stringValue(annotated.origin || annotated.source);
+      const unit = stringValue(annotated.units || annotated.unit);
+      const crsValue = asRecord(annotated.crs)?.value || annotated.crs;
+      const meta = [
+        origin ? (originLabels[origin] || displayLabel([origin])) : undefined,
+        unit ? `Units: ${unit}` : undefined,
+        crsValue ? `CRS: ${compactValue(crsValue)}` : undefined,
+      ].filter(Boolean).join(" · ");
+      facts.push({
+        label: displayLabel(path),
+        value: compactValue(annotated.value),
+        meta: meta || undefined,
+      });
+      return;
+    }
   }
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
@@ -448,6 +643,9 @@ const toolPurposeFallbacks: Record<string, string> = {
 
 export function activityPurpose(activity: Activity): string {
   if (activity.purpose) return activity.purpose;
+  if (activity.kind === "artifact") {
+    return artifactStagePurpose(activity.artifactStage || "presentation");
+  }
   if (activity.kind !== "tool") return activity.detail || "";
   const base = activity.toolName ? toolPurposeFallbacks[activity.toolName] : undefined;
   if (activity.toolName === "ogc_processes_list") {
@@ -484,6 +682,7 @@ const toolDisplayTitles: Record<string, string> = {
 };
 
 export function activityDisplayTitle(activity: Activity): string {
+  if (activity.kind === "artifact") return artifactStageTitle(activity.artifactStage || activity.title);
   if (activity.kind !== "tool") return activity.title;
   if (activity.toolName === "ogc_processes_list") {
     const search = asRecord(activity.arguments)?.search_text;
@@ -511,6 +710,9 @@ export function activityOutputSummary(activity: Activity): string {
     }
     return "The workflow needs information from you before it can continue.";
   }
+  if (activity.kind === "artifact") {
+    return activity.detail || "This artifact stage completed.";
+  }
   return activity.resultPreview
     ? "The service returned a result. See the readable facts and technical response below."
     : "This step completed.";
@@ -525,6 +727,20 @@ export function activityNextStep(activity: Activity): string | undefined {
     return result?.confirmation_required === true
       ? "Waiting for your approval; nothing has been executed."
       : "Waiting for the missing value; nothing has been executed.";
+  }
+  if (activity.kind === "artifact") {
+    const nextByStage: Record<string, string> = {
+      submitted: "Monitor the process until it finishes.",
+      monitoring: "Retrieve the process outputs when execution reaches a final state.",
+      retrieval: "Detect the real format of the retrieved content.",
+      detection: "Interpret the output using the matching parser.",
+      interpretation: "Prepare safe, bounded browser representations.",
+      conversion: "Verify the available presentations.",
+      presentation: "Publish the output manifest with honest renderer status.",
+      storage: "Expose only a controlled artifact reference.",
+      complete: "Review the verified presentations below.",
+    };
+    return nextByStage[activity.artifactStage || "presentation"];
   }
   if (activity.toolName === "background_job") {
     const spatialOutput = result?.spatialOutput;

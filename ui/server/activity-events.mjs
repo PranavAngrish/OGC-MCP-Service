@@ -174,6 +174,8 @@ export function summarizeToolPurpose(name, args = {}) {
       return "Inspect the metadata for stored, model-safe result payloads.";
     case "ogc_proxy_memory_retrieve":
       return `Retrieve a bounded page from stored result ${identifier(args.handle, "unknown")}.`;
+    case "ogc_proxy_artifact_retrieve":
+      return `Retrieve protected output representation ${identifier(args.handle, "unknown")} through the trusted gateway.`;
     case "ogc_common_get_landing_page":
       return `Inspect the OGC landing page${server}.`;
     case "ogc_common_get_conformance":
@@ -245,9 +247,27 @@ function serverSuffix(payload) {
 }
 
 /** Build a concise outcome sentence from the standardized MCP result envelope. */
-export function summarizeToolOutcome(name, payload, isError = false) {
+export function summarizeToolOutcome(name, payload, isError = false, outputManifest = null) {
   if (isError || payload?.ok === false) {
     return `Failed: ${redactString(errorMessage(payload), MAX_RESULT_STRING)}`;
+  }
+  if (outputManifest?.execution) {
+    const outputs = Array.isArray(outputManifest.outputs) ? outputManifest.outputs : [];
+    const retrieved = outputs.filter((output) => ["retrieved", "partial"].includes(output?.retrieval?.state)).length;
+    const interpreted = outputs.filter((output) => output?.interpretation?.state === "recognized").length;
+    const mapped = outputs.filter((output) => (
+      Array.isArray(output?.presentations)
+      && output.presentations.some((presentation) => presentation?.kind === "map" && presentation?.state === "ready")
+    )).length;
+    const execution = outputManifest.execution.state;
+    if (execution === "failed") return "Process execution failed; no output retrieval or presentation is being claimed.";
+    if (["submitted", "running"].includes(execution)) {
+      return "Process submitted; output retrieval, interpretation, and presentation are still pending.";
+    }
+    if (outputs.length) {
+      return `Execution ${execution}; ${retrieved}/${outputs.length} output${outputs.length === 1 ? "" : "s"} retrieved, ${interpreted}/${outputs.length} interpreted, ${mapped}/${outputs.length} map-ready.`;
+    }
+    return `Execution ${execution}; no declared output was returned.`;
   }
   const suffix = serverSuffix(payload);
   const count = countFrom(payload);
@@ -316,6 +336,8 @@ export function summarizeToolOutcome(name, payload, isError = false) {
       return count === null
         ? "Stored result page retrieved."
         : `${count} stored feature${count === 1 ? "" : "s"} retrieved.`;
+    case "ogc_proxy_artifact_retrieve":
+      return "Protected output representation retrieved.";
     default: {
       const operation = valueLabel(payload?.operation);
       return operation ? `${operation} completed${suffix}.` : `OGC tool completed${suffix}.`;
@@ -331,6 +353,7 @@ function compactPlan(plan) {
   }
   if (Array.isArray(plan.unresolved)) compact.unresolved = plan.unresolved;
   if (plan.execute_request !== undefined) compact.execute_request = plan.execute_request;
+  if (plan.input_context !== undefined) compact.input_context = plan.input_context;
   return safeValue(compact, {
     maxDepth: 7,
     maxEntries: 30,
@@ -340,7 +363,7 @@ function compactPlan(plan) {
 }
 
 /** Select a small structured subset suitable for the live-activity UI. */
-export function compactToolResult(payload) {
+export function compactToolResult(payload, preparedOutputManifest = null) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const compact = {
     ok: payload.ok !== false,
@@ -386,14 +409,53 @@ export function compactToolResult(payload) {
   if (payload.error) compact.error = safeValue(payload.error, {
     maxString: MAX_RESULT_STRING,
   });
+  const outputManifest = preparedOutputManifest
+    || payload.output_manifest
+    || payload.outputManifest
+    || payload.data?.output_manifest
+    || payload.data?.outputManifest;
+  if (outputManifest?.schemaVersion === "ogc-output-manifest/1") {
+    compact.outputManifest = safeValue({
+      schemaVersion: outputManifest.schemaVersion,
+      manifestId: outputManifest.manifestId,
+      execution: outputManifest.execution,
+      overallState: outputManifest.overallState,
+      outputs: Array.isArray(outputManifest.outputs)
+        ? outputManifest.outputs.map((output) => ({
+          id: output.id,
+          title: output.title,
+          status: output.status,
+          retrieval: output.retrieval,
+          interpretation: output.interpretation,
+          presentations: output.presentations,
+          warnings: output.warnings,
+        }))
+        : [],
+      warnings: outputManifest.warnings,
+    }, {
+      maxDepth: 8,
+      maxEntries: 40,
+      maxItems: 20,
+      maxString: MAX_RESULT_STRING,
+    });
+  }
   return compact;
 }
 
-export function activityWarnings(payload) {
+export function activityWarnings(payload, preparedOutputManifest = null) {
   const candidates = [
     payload?.warnings,
     payload?.guidance?.warnings,
     payload?.data?.summary?.warnings,
+    payload?.output_manifest?.warnings,
+    payload?.outputManifest?.warnings,
+    preparedOutputManifest?.warnings,
+    ...(Array.isArray(preparedOutputManifest?.outputs)
+      ? preparedOutputManifest.outputs.flatMap((output) => [
+        output?.warnings,
+        output?.interpretation?.warnings,
+      ])
+      : []),
   ].flatMap((value) => (Array.isArray(value) ? value : value ? [value] : []));
   return [...new Set(
     candidates

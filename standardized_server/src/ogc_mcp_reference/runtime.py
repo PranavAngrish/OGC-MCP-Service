@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 
+from .artifacts import ArtifactStore, OutputArtifactPipeline
 from .config import load_settings
 from .models import RegistrySettings, ServerPolicy
 from .modules import CommonService, FeaturesService, ProcessesService, RecordsService
@@ -41,6 +42,8 @@ class ProxyRuntime:
     planner: ProxyPlanner
     workflow: PlanningWorkflow
     policy: ServerPolicy
+    artifacts: ArtifactStore
+    output_artifacts: OutputArtifactPipeline
 
 
 def create_runtime(
@@ -61,15 +64,31 @@ def create_runtime(
     registry = ServerRegistry(resolved_settings)
     token_manager = TokenManager(transport=transport)
     client = OgcHttpClient(transport=transport, token_manager=token_manager)
+
+    store_settings = resolved_settings.store
+    artifact_kv_store = build_store(
+        store_settings,
+        namespace="artifact",
+        default_ttl_seconds=store_settings.artifact_ttl_seconds,
+    )
+    artifacts = ArtifactStore(
+        store=artifact_kv_store,
+        ttl_seconds=store_settings.artifact_ttl_seconds,
+    )
+    output_artifacts = OutputArtifactPipeline(client=client, store=artifacts)
+
     common = CommonService(registry, client)
     features = FeaturesService(registry, client)
     records = RecordsService(registry, client)
-    processes = ProcessesService(registry, client)
+    processes = ProcessesService(
+        registry,
+        client,
+        output_artifacts=output_artifacts,
+    )
     capabilities = CapabilityCache(registry, client)
     fallbacks = FallbackEngine()
     process_descriptions = ProcessDescriptionCache(processes)
 
-    store_settings = resolved_settings.store
     memory_store = build_store(
         store_settings,
         namespace="memory",
@@ -110,6 +129,8 @@ def create_runtime(
         planner=planner,
         workflow=workflow,
         policy=resolved_settings.policy,
+        artifacts=artifacts,
+        output_artifacts=output_artifacts,
     )
     if bootstrap_capabilities:
         runtime.capabilities.bootstrap()

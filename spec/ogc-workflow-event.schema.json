@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://52north.org/ogc-mcp/workflow-event/v2/schema.json",
+  "title": "OGC MCP Workflow Event",
+  "description": "A versioned event envelope describing agent, process, output, and presentation progress. Producers assign sequence values; transport replay and reconnect behavior are outside this schema.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "sequence",
+    "sessionId",
+    "turnId",
+    "targetMessageId",
+    "activityId",
+    "timestamp",
+    "type",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "activity/2"
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "targetMessageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "runId": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "activityId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "type": {
+      "enum": [
+        "intent_recognized",
+        "decision_recorded",
+        "step_started",
+        "step_completed",
+        "clarification_required",
+        "approval_required",
+        "job_progress",
+        "output_manifest_upserted",
+        "presentation_status",
+        "workflow_completed",
+        "workflow_failed"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

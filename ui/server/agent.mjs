@@ -1,5 +1,10 @@
 import OpenAI from "openai";
 import {
+  approvalRequestCount,
+  clearApprovalSession,
+  registerApprovalRequest,
+} from "./approvals.mjs";
+import {
   backgroundJobCount,
   clearBackgroundJobs,
   extractBackgroundJob,
@@ -16,8 +21,14 @@ import {
   summarizeToolPurpose,
 } from "./activity-events.mjs";
 import { callMcpTool, listMcpTools } from "./mcp-client.mjs";
-import { findMemoryHandle, prepareMapArtifact, structuredToolPayload } from "./map-artifacts.mjs";
+import { findMemoryHandle, structuredToolPayload } from "./map-artifacts.mjs";
 import { AGENT_INSTRUCTIONS, MAX_TOOL_ROUNDS, toolLabel } from "./prompts.mjs";
+import {
+  clearResultArtifactSession,
+  prepareResultArtifacts,
+} from "./result-artifacts.mjs";
+import { modelToolResultText } from "./model-output.mjs";
+import { isModelCallableTool, modelVisibleMcpTools } from "./tool-policy.mjs";
 
 const sessions = new Map();
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
@@ -78,12 +89,17 @@ function resultText(result) {
 export function clearSession(sessionId) {
   sessions.delete(sessionId);
   clearBackgroundJobs(sessionId);
+  clearResultArtifactSession(sessionId);
+  clearApprovalSession(sessionId);
 }
 
 export async function runAgentTurn({ message, sessionId, responseId, emit, signal }) {
   const client = geminiClient();
-  const callTool = (name, args) => callMcpTool(name, args, { signal });
-  const mcpTools = await listMcpTools();
+  const callTool = (name, args, options = {}) => callMcpTool(name, args, {
+    ...options,
+    signal,
+  });
+  const mcpTools = modelVisibleMcpTools(await listMcpTools());
   const tools = mcpTools.map(asFunctionTool);
   const priorMessages = sessions.get(sessionId)?.messages || [
     { role: "system", content: AGENT_INSTRUCTIONS },
@@ -181,11 +197,80 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
       }, toolStartedAtMs);
 
       let output;
+      if (!isModelCallableTool(call.function.name)) {
+        output = JSON.stringify({
+          ok: false,
+          error: "This internal renderer tool is not callable by the conversational model.",
+        });
+        const rejectedAtMs = Date.now();
+        emitEvent("tool_result", {
+          id: activityId,
+          name: call.function.name,
+          title: toolLabel(call.function.name),
+          summary: "Rejected an internal-only renderer tool call.",
+          result: { ok: false, error: "Internal renderer tool calls are gateway-only." },
+          preview: output,
+          warnings: [],
+          isError: true,
+          status: "error",
+          startedAt: toolStartedAt,
+          completedAt: new Date(rejectedAtMs).toISOString(),
+          durationMs: Math.max(0, rejectedAtMs - toolStartedAtMs),
+        }, rejectedAtMs);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.function.name,
+          content: output,
+        });
+        continue;
+      }
       try {
         const result = await callTool(call.function.name, args);
         if (signal?.aborted) throw new Error("The request was cancelled.");
         output = resultText(result);
         const resultPayload = structuredToolPayload(result);
+        const approvalRequest = registerApprovalRequest({
+          sessionId,
+          targetMessageId: responseId,
+          payload: resultPayload,
+        });
+        if (approvalRequest) {
+          emitEvent("approval_request", {
+            targetMessageId: responseId,
+            request: approvalRequest,
+          });
+        }
+        let artifacts = null;
+        let artifactPreparationFailed = false;
+        try {
+          artifacts = await prepareResultArtifacts({
+            toolName: call.function.name,
+            args,
+            activityId,
+            result,
+            callTool,
+            sessionId,
+          });
+        } catch {
+          artifactPreparationFailed = true;
+          emitEvent("artifact_status", {
+            activityId,
+            manifestId: `manifest-${activityId}`,
+            outputId: "result",
+            stage: "orchestration",
+            status: "error",
+            detail: "The tool completed, but the gateway could not prepare its output manifest.",
+          });
+        }
+        output = modelToolResultText({
+          toolName: call.function.name,
+          payload: resultPayload,
+          rawOutput: output,
+          artifacts,
+          preparationFailed: artifactPreparationFailed,
+          isError: Boolean(result?.isError),
+        });
         const toolCompletedAtMs = Date.now();
         emitEvent("tool_result", {
           id: activityId,
@@ -195,10 +280,11 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
             call.function.name,
             resultPayload,
             Boolean(result?.isError),
+            artifacts?.manifest,
           ),
-          result: compactToolResult(resultPayload),
+          result: compactToolResult(resultPayload, artifacts?.manifest),
           preview: activityResultPreview(resultPayload, output),
-          warnings: activityWarnings(resultPayload),
+          warnings: activityWarnings(resultPayload, artifacts?.manifest),
           isError: Boolean(result?.isError),
           status: result?.isError ? "error" : "complete",
           startedAt: toolStartedAt,
@@ -220,16 +306,15 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
           : "";
         const memoryHandle = findMemoryHandle(resultPayload)
           || (/^mem_[a-f0-9]{32}$/.test(retrievedHandle) ? retrievedHandle : "");
-        const visualization = await prepareMapArtifact({
-          toolName: call.function.name,
-          args,
-          activityId,
-          result,
-          callTool,
-        });
         if (signal?.aborted) throw new Error("The request was cancelled.");
-        if (visualization && (!memoryHandle || !mappedMemoryHandles.has(memoryHandle))) {
-          emitEvent("map_data", { activityId, visualization });
+        if (artifacts?.manifest) {
+          emitEvent("output_manifest", { activityId, manifest: artifacts.manifest });
+          for (const event of artifacts.artifactEvents || []) {
+            emitEvent("artifact_status", { activityId, ...event });
+          }
+        }
+        if (artifacts?.visualization && (!memoryHandle || !mappedMemoryHandles.has(memoryHandle))) {
+          emitEvent("map_data", { activityId, visualization: artifacts.visualization });
           if (memoryHandle) mappedMemoryHandles.add(memoryHandle);
         }
         if (
@@ -237,6 +322,7 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
           && !result?.isError
           && resultPayload
           && resultPayload?.ok !== false
+          && artifacts?.manifest?.overallState !== "pending"
         ) {
           stopTrackedJob(sessionId, args.job_id, resultPayload.server?.id || args.server_id);
         }
@@ -294,4 +380,5 @@ export const agentStatus = () => ({
   providerConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY),
   sessions: sessions.size,
   backgroundJobs: backgroundJobCount(),
+  pendingApprovals: approvalRequestCount(),
 });

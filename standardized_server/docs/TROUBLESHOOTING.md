@@ -94,6 +94,11 @@ resolution_prompt.per_field_questions
 
 Then call `ogc_proxy_update_plan` with a corrected `execute_request`.
 
+If the unresolved issue is an unknown unit or an assumed/defaulted value, also
+pass `input_context_json` with the exact input ID, the user-provided origin and
+unit/CRS, and `confirmed=true` only after the user has actually acknowledged
+it.
+
 If the problem is `process_id` or `sources`, create a new plan after discovering
 the correct metadata.
 
@@ -125,6 +130,42 @@ Possible causes:
 - a different worker received the retrieve call without shared Redis state.
 
 For multi-worker deployments, use Redis.
+
+## A Process Succeeds But Its Result Still Shows Loading
+
+Some OGC servers mark a job successful before its result resource is fully
+published. Terra retries pending manifests and transient result failures
+without rerunning the process. If retries are exhausted, the activity panel
+shows `retrievalAttempts`, the last detail, and whether retrieval is retryable.
+
+For slow deployments, adjust the gateway variables:
+
+```text
+OGC_JOB_RESULT_RETRY_INTERVAL_MS=1500
+OGC_JOB_RESULT_TIMEOUT_MS=60000
+```
+
+Also verify the result host is permitted by the server profile's
+`output_resolution` policy.
+
+## Points Appear On A Blank Map
+
+Set `VITE_MAP_STYLE_URL` before building the frontend. When the variable is
+omitted, the local development default uses MapLibre's public demo style. An
+explicit empty value selects the network-free privacy canvas.
+
+If a remote style errors or does not load within eight seconds, Terra switches
+to the local canvas, renders validated result layers, and labels the basemap
+`unavailable` instead of remaining stuck. In production, configure a trusted
+MapLibre-compatible style and tile provider suitable for your traffic and
+privacy requirements.
+
+## A GML Or XML Result Is Shown As A Download
+
+Check the output manifest's declared and detected media types and its
+interpretation error. Supported bounded GML is converted to canonical GeoJSON.
+Unsafe XML, unsupported geometry, unknown projected CRS, or malformed
+coordinates remain downloadable but are deliberately not claimed as map-ready.
 
 ## Redis Backend Fails To Start
 

@@ -76,7 +76,8 @@ Each server profile registers one approved upstream deployment.
   "defaults": {},
   "auth": {},
   "security": {},
-  "limits": {}
+  "limits": {},
+  "output_resolution": {}
 }
 ```
 
@@ -256,6 +257,62 @@ HTTP(S) references before the upstream request is sent.
 
 `timeout_seconds` must be positive. `max_response_bytes` must be positive.
 
+## Process Output Resolution
+
+Process executions may return inline values, temporary output references, or
+containers whose values use another format. The output artifact pipeline
+normalizes those cases into `output_manifest` while preserving the original
+`data` response.
+
+```json
+{
+  "output_resolution": {
+    "enabled": true,
+    "allow_same_origin": true,
+    "allowed_hosts": ["outputs.example.org"],
+    "allow_private_networks": false,
+    "allow_insecure_redirects": false,
+    "max_redirects": 3,
+    "max_resolution_seconds": 60,
+    "max_response_bytes": 5000000,
+    "max_outputs": 20,
+    "inline_preview_bytes": 0
+  }
+}
+```
+
+- `enabled` controls referenced-output retrieval. Inline outputs are still
+  interpreted when reference retrieval is disabled.
+- `allow_same_origin` permits references with the same scheme, hostname, and
+  effective port as the registered server. Private same-origin references also
+  require `security.allow_private_networks=true`.
+- `allowed_hosts` explicitly enables cross-origin output hosts. Authentication
+  configured for the OGC server is never forwarded cross-origin.
+- `allow_private_networks` permits an allowlisted cross-origin private address
+  only when `security.allow_private_networks` is also enabled.
+- `allow_insecure_redirects` defaults to `false`, blocking HTTPS-to-HTTP
+  downgrades.
+- `max_redirects` bounds each individual redirect chain.
+- `max_resolution_seconds` and `max_response_bytes` are shared across all
+  top-level outputs, nested references, and redirect responses in one manifest
+  build. The pipeline also derives an aggregate HTTP fetch ceiling from
+  `max_outputs * (max_redirects + 1)`.
+- `max_outputs` bounds the number of interpreted outputs and cannot exceed the
+  manifest contract limit of `100`.
+- `inline_preview_bytes` defaults to `0`, keeping coordinate and payload data
+  out of model-facing manifests. Complete canonical data and bounded renderer
+  previews use separate opaque `art_*` handles; map/table/chart/text
+  presentations point to the bounded preview. Trusted clients retrieve only
+  the required handle with `ogc_proxy_artifact_retrieve`. Increase the inline
+  limit only when the resulting manifest exposure is acceptable.
+
+Every redirect is revalidated. Literal loopback, private, link-local, and known
+cloud metadata hostnames are blocked unless the relevant private-network policy
+is explicitly enabled. Host allowlisting alone cannot prevent DNS rebinding in
+all deployment environments; production deployments should additionally
+enforce DNS and network-egress policy at the container, host, or service-mesh
+boundary.
+
 ## Store Settings
 
 ```json
@@ -265,7 +322,8 @@ HTTP(S) references before the upstream request is sent.
     "redis_url_env": "OGC_MCP_REDIS_URL",
     "key_prefix": "ogc_mcp",
     "plan_ttl_seconds": 3600,
-    "memory_ttl_seconds": 1800
+    "memory_ttl_seconds": 1800,
+    "artifact_ttl_seconds": 1800
   }
 }
 ```
@@ -292,6 +350,8 @@ Prefix used for Redis keys.
 
 - `plan_ttl_seconds`: expiration for stored plans.
 - `memory_ttl_seconds`: expiration for proxy memory records.
+- `artifact_ttl_seconds`: expiration for original and canonical output
+  representations addressed by `art_*` handles.
 
 Use `0` to disable expiry.
 
@@ -305,11 +365,12 @@ Use `0` to disable expiry.
 }
 ```
 
-When `false`, `ogc_processes_execute` is not registered as an MCP tool. This is
-the default and recommended setting for user-facing workflows.
+When `false`, `ogc_processes_execute` and `ogc_jobs_dismiss` are not registered
+as MCP tools. This is the default and recommended setting for user-facing
+workflows.
 
-Set it to `true` only when you need direct, unmediated process execution for
-low-level interoperability testing.
+Set it to `true` only when you need direct execution and job-control operations
+for low-level interoperability testing.
 
 ## Environment Variables
 

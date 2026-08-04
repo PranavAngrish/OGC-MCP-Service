@@ -12,6 +12,113 @@ from ..services.planner import ProxyPlan, ProxyPlanner
 from .state import PlanningWorkflowState
 
 
+_CLARIFICATION_KINDS = {
+    "unit",
+    "crs",
+    "axis_order",
+    "input",
+    "output_format",
+    "presentation",
+    "remote_fetch",
+}
+
+
+def build_clarification_request(
+    unresolved: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    """Convert internal unresolved issues into the public HITL contract."""
+    issues: list[dict[str, Any]] = []
+    for index, item in enumerate(unresolved[:100]):
+        field = str(item.get("field") or "execute_request")[:500]
+        reason = str(item.get("reason") or "This input needs clarification.")[:4000]
+        kind = str(item.get("kind") or "input")
+        if kind not in _CLARIFICATION_KINDS:
+            kind = "input"
+        question = str(
+            item.get("question")
+            or (
+                f"What value should be used for "
+                f"'{item.get('title', field)}'? ({reason})"
+            )
+        )[:2000]
+        issue: dict[str, Any] = {
+            "id": str(item.get("id") or f"clarification-{index + 1}")[:200],
+            "kind": kind,
+            "fieldPath": field,
+            "question": question,
+            "whyItMatters": str(
+                item.get("why_it_matters") or reason
+            )[:4000],
+            "allowFreeText": bool(item.get("allow_free_text", True)),
+        }
+        if "observed_value" in item:
+            issue["observedValue"] = item["observed_value"]
+        options: list[dict[str, Any]] = []
+        for option in item.get("options", []) if isinstance(item.get("options"), list) else []:
+            if not isinstance(option, dict) or "value" not in option:
+                continue
+            normalized_option: dict[str, Any] = {
+                "value": option["value"],
+                "label": str(option.get("label") or option["value"])[:500],
+            }
+            if option.get("consequence"):
+                normalized_option["consequence"] = str(option["consequence"])[:2000]
+            options.append(normalized_option)
+        if options:
+            issue["options"] = options[:50]
+        if "recommended" in item:
+            issue["recommended"] = item["recommended"]
+        issues.append(issue)
+    return {
+        "blocking": bool(issues),
+        "scope": "execution",
+        "issues": issues,
+    }
+
+
+def build_resolution_questions(
+    unresolved: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """Return concise one-at-a-time questions with resolution metadata."""
+    questions: list[dict[str, Any]] = []
+    for item in unresolved[:100]:
+        field = str(item.get("field") or "")
+        reason = str(item.get("reason") or "")
+        questions.append(
+            {
+                "id": str(item.get("id") or field or f"issue-{len(questions) + 1}"),
+                "kind": str(item.get("kind") or "input"),
+                "field": field,
+                "title": item.get("title", field),
+                "reason": reason,
+                "question": str(
+                    item.get("question")
+                    or (
+                        f"What value should be used for "
+                        f"'{item.get('title', field)}'? ({reason})"
+                    )
+                ),
+                "why_it_matters": str(item.get("why_it_matters") or reason),
+                **(
+                    {"observed_value": item["observed_value"]}
+                    if "observed_value" in item
+                    else {}
+                ),
+                **(
+                    {"options": item["options"]}
+                    if isinstance(item.get("options"), list)
+                    else {}
+                ),
+                **(
+                    {"resolution": item["resolution"]}
+                    if item.get("resolution")
+                    else {}
+                ),
+            }
+        )
+    return questions
+
+
 class PlanningWorkflow:
     """Stateful workflow facade around deterministic proxy services.
 
@@ -164,7 +271,8 @@ class PlanningWorkflow:
                     "The execution plan cannot proceed because one or more inputs are "
                     "missing or ambiguous. Ask the user to supply each value listed in "
                     "per_field_questions — ONE question at a time — then call "
-                    "ogc_proxy_update_plan with the corrected execute_request. "
+                    "ogc_proxy_update_plan with the corrected execute_request and any "
+                    "confirmed unit/origin/CRS facts in input_context_json. "
                     "Do NOT create a brand-new plan; update this one in place."
                 )
                 _next_tool = "ogc_proxy_update_plan"
@@ -174,19 +282,8 @@ class PlanningWorkflow:
                 "message": _resolution_message,
                 "next_tool": _next_tool,
                 "unresolved": unresolved,
-                "per_field_questions": [
-                    {
-                        "field": item.get("field", ""),
-                        "title": item.get("title", item.get("field", "")),
-                        "reason": item.get("reason", ""),
-                        "question": (
-                            f"What value should be used for "
-                            f"'{item.get('title', item.get('field', ''))}'? "
-                            f"({item.get('reason', '')})"
-                        ),
-                    }
-                    for item in unresolved
-                ],
+                "per_field_questions": build_resolution_questions(unresolved),
+                "clarification_request": build_clarification_request(unresolved),
             }
 
         return {
@@ -203,6 +300,11 @@ class PlanningWorkflow:
             "confirmation_required": workflow_status == "awaiting_human_confirmation",
             "plan": plan,
             "resolution_prompt": resolution_prompt,
+            "clarification_request": (
+                build_clarification_request(plan.get("unresolved", []))
+                if plan_status == "needs_resolution"
+                else {}
+            ),
             "confirmation_prompt": state.get("confirmation_prompt", {}),
         }
 
@@ -347,6 +449,11 @@ class PlanningWorkflow:
             execution_mode=selected_mode,
             wait_seconds=wait_seconds,
         )
+        manifest = result.get("output_manifest")
+        if isinstance(manifest, dict):
+            execution = manifest.get("execution")
+            if isinstance(execution, dict):
+                execution["planId"] = plan_id
         result["proxy"] = {
             "workflow_backend": self.backend,
             "requested_execution_mode": execution_mode,
@@ -419,6 +526,7 @@ class PlanningWorkflow:
             ),
             "steps": plan.get("steps", []),
             "execute_request": plan.get("execute_request", {}),
+            "input_context": plan.get("input_context", {}),
             "unresolved": plan.get("unresolved", []),
             "instructions": (
                 "1. Display execute_request to the user verbatim.\n"

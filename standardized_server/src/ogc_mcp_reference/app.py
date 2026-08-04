@@ -14,6 +14,10 @@ from .errors import OgcMcpError
 from .result import invoke, parse_json_object
 from .runtime import ProxyRuntime, create_runtime
 from .services.sanitization import DEFAULT_SUMMARY_FIELDS
+from .workflows.planning import (
+    build_clarification_request,
+    build_resolution_questions,
+)
 
 
 SERVER_INSTRUCTIONS = """
@@ -47,14 +51,18 @@ RULE 1 — NEVER ASSUME VAGUE INPUTS.
 If the user says "near XYZ", "around the city", "close to", "draw a circle",
 or uses any spatial language without exact coordinates or a numeric distance,
 STOP and ask for clarification. Do not guess coordinates, buffer sizes, or
-area boundaries on behalf of the user.
+area boundaries on behalf of the user. A number without a unit is still
+ambiguous whenever the process description does not declare its unit.
 
 RULE 2 — ONE QUESTION AT A TIME FOR MISSING INPUTS.
 When ogc_proxy_create_plan or ogc_proxy_update_plan returns resolution_required=true,
 read resolution_prompt.per_field_questions and ask the user each question ONE
 AT A TIME. Wait for a concrete answer before moving to the next question.
 After collecting all answers, call ogc_proxy_update_plan (not ogc_proxy_create_plan
-again) with the corrected execute_request. Repeat until resolution_required=false.
+again) with the corrected execute_request. For unit, CRS, or assumption questions,
+also pass input_context_json using the exact input ID, origin, unit/CRS where
+applicable, and confirmed=true only after the user supplied or acknowledged it.
+Repeat until resolution_required=false.
 
 RULE 3 — ALWAYS SHOW execute_request VERBATIM BEFORE CONFIRMING.
 After ogc_proxy_create_plan or ogc_proxy_update_plan returns confirmation_required=true,
@@ -128,6 +136,26 @@ request.
 
 Prefer referenced data URLs (href) over large inline payloads whenever the
 upstream process description says it accepts references.
+
+━━━ PROCESS OUTPUT TRUTH ━━━
+
+processes.execute, proxy.execute_plan, and jobs.get_results include a versioned
+output_manifest. Treat its phases independently:
+- execution.state says whether the upstream computation ran;
+- retrieval.state says whether each inline or referenced output was obtained;
+- interpretation.state says whether its format and semantics were recognized;
+- presentations[].state says whether a map, table, chart, image, text preview,
+  metric, or download is actually available.
+
+An envelope-level ok=true means the tool request succeeded; it does NOT prove
+that a referenced output was retrieved, parsed, or mapped. Never claim that a
+map or converted geometry exists unless the corresponding presentation is
+state="ready". If interpretation is unsupported or failed, report that the
+original output is available through its artifact handle without inventing its
+contents. Use ogc_proxy_artifact_retrieve only when a trusted client needs the
+stored representation; do not copy large canonical artifacts into model
+context. Temporary upstream output URLs are intentionally replaced by opaque
+art_* handles.
 
 ━━━ PROCESS INPUT DISCIPLINE ━━━
 
@@ -389,6 +417,61 @@ def create_mcp_server(
         return invoke("proxy.memory.retrieve", callback)
 
     @mcp.tool()
+    def ogc_proxy_artifact_retrieve(handle: str) -> dict[str, Any]:
+        """Retrieve one canonical or original process-output representation.
+
+        Output manifests refer to representations by opaque ``art_*`` handles.
+        Use this tool when a representation is too large to be embedded in the
+        manifest, when a renderer needs the canonical GeoJSON, or when the user
+        requests a controlled download. Upstream temporary URLs and
+        credentials are never exposed. The stored value was bounded by the
+        server's output-resolution limit before the handle was created.
+
+        Binary representations are returned as base64 with
+        ``encoding="base64"``. JSON and text use ``encoding="identity"``.
+
+        Args:
+            handle: Opaque ``art_*`` handle from output_manifest.representations.
+
+        Returns:
+            Media type, encoding, byte size, role, and stored representation.
+        """
+        def callback() -> dict[str, Any]:
+            if not handle.startswith("art_"):
+                raise OgcMcpError(
+                    "invalid_argument",
+                    "Artifact handle must start with 'art_'.",
+                    {"handle": handle},
+                )
+            artifact = runtime.artifacts.retrieve(handle)
+            if artifact is None:
+                raise OgcMcpError(
+                    "not_found",
+                    "No stored artifact found for this handle. It may have expired.",
+                    {"handle": handle},
+                )
+            artifact_payload = {
+                key: artifact[key]
+                for key in (
+                    "handle",
+                    "mediaType",
+                    "role",
+                    "sizeBytes",
+                    "createdAt",
+                    "encoding",
+                )
+            }
+            artifact_payload["data"] = artifact["data"]
+            return {
+                "ok": True,
+                "operation": "proxy.artifact.retrieve",
+                "artifact": artifact_payload,
+                "data": artifact["data"],
+            }
+
+        return invoke("proxy.artifact.retrieve", callback)
+
+    @mcp.tool()
     def ogc_proxy_create_plan(plan_request_json: str) -> dict[str, Any]:
         """Create a validated, user-confirmable proxy execution plan.
 
@@ -406,9 +489,10 @@ def create_mcp_server(
 
         Args:
             plan_request_json: JSON object with operation, server_id,
-                process_id, execute_request, and optional sources. server_id is
-                the Processes server; each sources[].server_id is a Features
-                server.
+                process_id, execute_request, optional sources, and optional
+                input_context. input_context is keyed by exact input ID and can
+                record origin, unit, CRS, note, and confirmed. server_id is the
+                Processes server; each sources[].server_id is a Features server.
 
         Returns:
             A stored plan with status "ready_for_confirmation" or
@@ -479,6 +563,7 @@ def create_mcp_server(
     def ogc_proxy_update_plan(
         plan_id: str,
         execute_request_json: str,
+        input_context_json: str = "",
     ) -> dict[str, Any]:
         """Update the inputs of a needs_resolution plan and revalidate in place.
 
@@ -499,6 +584,11 @@ def create_mcp_server(
         Args:
             plan_id: Plan ID returned by ogc_proxy_create_plan.
             execute_request_json: Corrected execute request body as a JSON object.
+            input_context_json: Optional JSON object keyed by exact process
+                input ID. Record origin ("user", "service", "operator",
+                "assumed", "inferred", "default", or "unknown"), plus unit,
+                CRS, or note where applicable. Set confirmed=true only after
+                explicit human acknowledgement. Omit to preserve prior context.
 
         Returns:
             Updated plan state plus either resolution_prompt (if still unresolved)
@@ -506,6 +596,15 @@ def create_mcp_server(
             calling ogc_proxy_confirm_plan).
         """
         def callback() -> dict[str, Any]:
+            input_context = (
+                parse_json_object(
+                    input_context_json,
+                    label="input_context_json",
+                    allow_empty=False,
+                )
+                if input_context_json.strip()
+                else None
+            )
             updated_plan = runtime.planner.update_plan(
                 plan_id,
                 parse_json_object(
@@ -513,6 +612,7 @@ def create_mcp_server(
                     label="execute_request_json",
                     allow_empty=False,
                 ),
+                input_context=input_context,
             )
             plan_dict = updated_plan.to_dict()
             result: dict[str, Any] = {
@@ -529,6 +629,7 @@ def create_mcp_server(
                 "confirmation_required": updated_plan.status == "ready_for_confirmation",
                 "plan": plan_dict,
                 "resolution_prompt": {},
+                "clarification_request": {},
                 "confirmation_prompt": {},
             }
             if updated_plan.status == "needs_resolution":
@@ -539,23 +640,14 @@ def create_mcp_server(
                     "message": (
                         "Some inputs are still missing or have type mismatches. "
                         "Ask the user the questions in per_field_questions ONE AT A TIME, "
-                        "then call ogc_proxy_update_plan again with the corrected inputs."
+                        "then call ogc_proxy_update_plan again with the corrected inputs "
+                        "and any explicit origin/unit/CRS facts in input_context_json."
                     ),
                     "unresolved": unresolved,
-                    "per_field_questions": [
-                        {
-                            "field": item.get("field", ""),
-                            "title": item.get("title", item.get("field", "")),
-                            "reason": item.get("reason", ""),
-                            "question": (
-                                f"What value should be used for "
-                                f"'{item.get('title', item.get('field', ''))}'? "
-                                f"({item.get('reason', '')})"
-                            ),
-                        }
-                        for item in unresolved
-                    ],
+                    "per_field_questions": build_resolution_questions(unresolved),
+                    "clarification_request": build_clarification_request(unresolved),
                 }
+                result["clarification_request"] = build_clarification_request(unresolved)
             elif updated_plan.status == "ready_for_confirmation":
                 result["confirmation_prompt"] = {
                     "kind": "human_confirmation",
@@ -568,6 +660,7 @@ def create_mcp_server(
                         "call ogc_proxy_update_plan with corrections instead."
                     ),
                     "execute_request": plan_dict.get("execute_request", {}),
+                    "input_context": plan_dict.get("input_context", {}),
                     "steps": plan_dict.get("steps", []),
                     "unresolved": plan_dict.get("unresolved", []),
                     "instructions": (
@@ -1202,7 +1295,23 @@ def create_mcp_server(
         Returns:
             A standard result envelope containing job status metadata.
         """
-        return invoke("jobs.get_status", lambda: processes.get_job_status(job_id, server_id))
+        def callback() -> dict[str, Any]:
+            result = processes.get_job_status(job_id, server_id)
+            resolved_server_id = str(
+                result.get("server", {}).get("id", server_id)
+                if isinstance(result.get("server"), dict)
+                else server_id
+            )
+            plan_updates = runtime.planner.reconcile_job_status(
+                job_id,
+                server_id=resolved_server_id,
+                result=result,
+            )
+            if plan_updates:
+                result["proxy_plan_updates"] = plan_updates
+            return result
+
+        return invoke("jobs.get_status", callback)
 
     @mcp.tool()
     def ogc_jobs_get_results(
@@ -1234,6 +1343,17 @@ def create_mcp_server(
         """
         def callback() -> dict[str, Any]:
             result = processes.get_job_results(job_id, server_id)
+            resolved_server_id = str(
+                result.get("server", {}).get("id", server_id)
+                if isinstance(result.get("server"), dict)
+                else server_id
+            )
+            plan_updates = runtime.planner.reconcile_job_results(
+                job_id,
+                server_id=resolved_server_id,
+            )
+            if plan_updates:
+                result["proxy_plan_updates"] = plan_updates
             return _apply_response_mode(
                 result,
                 response_mode=response_mode,
@@ -1244,20 +1364,23 @@ def create_mcp_server(
 
         return invoke("jobs.get_results", callback)
 
-    @mcp.tool()
-    def ogc_jobs_dismiss(job_id: str, server_id: str = "") -> dict[str, Any]:
-        """Cancel or delete an asynchronous OGC job.
+    if runtime.policy.expose_direct_execution_tools:
 
-        Use this when a user wants to cancel a running job or clean up job
-        history, where supported by the server.
+        @mcp.tool()
+        def ogc_jobs_dismiss(job_id: str, server_id: str = "") -> dict[str, Any]:
+            """Cancel or delete an asynchronous OGC job.
 
-        Args:
-            job_id: Exact job ID from the execute response or ogc_jobs_list.
-            server_id: Registered Processes server ID. If omitted, the default is used.
+            This state-changing interoperability tool is registered only when
+            policy.expose_direct_execution_tools is enabled. User-facing clients
+            must still require an explicit request to cancel this exact job.
 
-        Returns:
-            A standard result envelope confirming dismissal.
-        """
-        return invoke("jobs.dismiss", lambda: processes.dismiss_job(job_id, server_id))
+            Args:
+                job_id: Exact job ID from the execute response or ogc_jobs_list.
+                server_id: Registered Processes server ID. If omitted, the default is used.
+
+            Returns:
+                A standard result envelope confirming dismissal.
+            """
+            return invoke("jobs.dismiss", lambda: processes.dismiss_job(job_id, server_id))
 
     return mcp

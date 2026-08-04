@@ -7,6 +7,7 @@ import {
   CircleAlert,
   CircleStop,
   Clock3,
+  Database,
   LoaderCircle,
   Wrench,
 } from "lucide-react";
@@ -49,6 +50,7 @@ const iconFor = (activity: Activity) => {
   if (activity.status === "error") return <CircleAlert aria-hidden="true" size={17} />;
   if (activity.status === "cancelled") return <CircleStop aria-hidden="true" size={17} />;
   if (activity.status === "waiting") return <Clock3 aria-hidden="true" size={17} />;
+  if (activity.kind === "artifact") return <Database aria-hidden="true" size={17} />;
   if (activity.kind === "reasoning") return <BrainCircuit aria-hidden="true" size={17} />;
   if (activity.kind === "tool") return <Wrench aria-hidden="true" size={17} />;
   return <Check aria-hidden="true" size={17} />;
@@ -56,6 +58,7 @@ const iconFor = (activity: Activity) => {
 
 const kindCopy = (activity: Activity) => {
   if (activity.kind === "tool") return "OGC service";
+  if (activity.kind === "artifact") return "Output pipeline";
   if (activity.kind === "reasoning") return "Decision summary";
   return "Workflow";
 };
@@ -67,7 +70,7 @@ function Facts({ facts }: { facts: ActivityFact[] }) {
       {facts.map((fact, index) => (
         <div key={`${fact.label}-${index}`}>
           <dt>{fact.label}</dt>
-          <dd>{fact.value}</dd>
+          <dd>{fact.value}{fact.meta && <small>{fact.meta}</small>}</dd>
         </div>
       ))}
     </dl>
@@ -103,11 +106,15 @@ function ActivityRow({
   const displayTitle = activityDisplayTitle(activity);
   const outputSummary = activity.kind === "tool" ? activityOutputSummary(activity) : "";
   const nextStep = activity.kind === "tool" ? activityNextStep(activity) : undefined;
+  const pipelineStep = activity.kind === "artifact";
+  const serviceStep = activity.kind === "tool";
+  const outputStep = serviceStep || pipelineStep;
+  const nextAction = outputStep ? activityNextStep(activity) : nextStep;
   const duration = formatDuration(activity.durationMs);
-  const synopsis = activity.kind === "tool"
+  const synopsis = outputStep
     ? (activity.status === "running" ? purpose : outputSummary)
     : activity.detail;
-  const hasDetails = activity.kind === "tool"
+  const hasDetails = outputStep
     || activity.detail !== undefined
     || activity.arguments !== undefined
     || activity.resultPreview !== undefined
@@ -164,7 +171,7 @@ function ActivityRow({
             exit={{ height: 0, opacity: 0 }}
             className="activity-details"
           >
-            {activity.kind === "tool" ? (
+            {outputStep ? (
               <>
                 <div className="activity-explanation">
                   <span>What Terra is doing</span>
@@ -173,11 +180,15 @@ function ActivityRow({
 
                 <div className="activity-io-grid">
                   <section className="activity-io-card activity-input-card">
-                    <span className="activity-block-label">Sent to the service</span>
+                    <span className="activity-block-label">
+                      {pipelineStep ? "Artifact context" : "Sent to the service"}
+                    </span>
                     <Facts facts={inputFacts} />
                   </section>
                   <section className="activity-io-card activity-output-card">
-                    <span className="activity-block-label">Received</span>
+                    <span className="activity-block-label">
+                      {pipelineStep ? "Validation result" : "Received"}
+                    </span>
                     <p className="activity-output-headline">{outputSummary}</p>
                     {outputFacts.length > 0 && <Facts facts={outputFacts} />}
                     {activity.warnings?.length ? (
@@ -188,19 +199,19 @@ function ActivityRow({
                   </section>
                 </div>
 
-                {nextStep && (
+                {nextAction && (
                   <div className="activity-next">
                     <ArrowRight aria-hidden="true" size={15} />
-                    <div><span>Next</span><p>{nextStep}</p></div>
+                    <div><span>Next</span><p>{nextAction}</p></div>
                   </div>
                 )}
 
                 <details className="activity-technical">
-                  <summary>Technical details <span>MCP</span></summary>
+                  <summary>Technical details <span>{pipelineStep ? "ARTIFACT" : "MCP"}</span></summary>
                   <div className="activity-technical-body">
                     <div>
-                      <span>Tool</span>
-                      <code>{activity.toolName || "Unknown MCP tool"}</code>
+                      <span>{pipelineStep ? "Stage" : "Tool"}</span>
+                      <code>{pipelineStep ? activity.artifactStage || "output" : activity.toolName || "Unknown MCP tool"}</code>
                     </div>
                     <div>
                       <span>Request</span>
@@ -252,6 +263,7 @@ export default function ActivityFeed({
   );
   const state = activityPanelState(activities, active);
   const toolCount = activities.filter((activity) => activity.kind === "tool").length;
+  const artifactCount = activities.filter((activity) => activity.kind === "artifact").length;
   const currentIndex = visibleActivities.reduce(
     (selected, activity, index) =>
       ["running", "waiting", "error"].includes(activity.status) ? index : selected,
@@ -292,6 +304,7 @@ export default function ActivityFeed({
           </span>
           <small>
             {toolCount} service {toolCount === 1 ? "call" : "calls"}
+            {artifactCount > 0 && ` · ${artifactCount} output ${artifactCount === 1 ? "stage" : "stages"}`}
             {totalDuration > 0 && ` · ${formatDuration(totalDuration)}`}
           </small>
         </div>
