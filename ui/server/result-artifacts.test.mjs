@@ -19,6 +19,36 @@ const pointCollection = {
   }],
 };
 
+async function featureQueryBundle(data, activityId) {
+  const handle = "mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  return prepareResultArtifacts({
+    toolName: "ogc_features_query",
+    args: { server_id: "features-server", collection_id: "boundaries" },
+    activityId,
+    result: structured({
+      ok: true,
+      operation: "features.query",
+      server: { id: "features-server" },
+      response: { status_code: 200, content_type: "application/geo+json" },
+      data: { facts: { numberReturned: data.features?.length ?? 0 } },
+      memory: { handle },
+    }),
+    callTool: async (name, args) => {
+      assert.equal(name, "ogc_proxy_memory_retrieve");
+      assert.equal(args.handle, handle);
+      return structured({
+        ok: true,
+        operation: "proxy.memory.retrieve",
+        handle,
+        total_features: data.features?.length ?? 0,
+        returned: data.features?.length ?? 0,
+        has_more: false,
+        data,
+      });
+    },
+  });
+}
+
 const gml = `<?xml version="1.0" encoding="utf-8"?>
 <ogr:FeatureCollection xmlns:ogr="http://ogr.maptools.org/" xmlns:gml="http://www.opengis.net/gml">
   <gml:featureMember>
@@ -670,6 +700,107 @@ test("recognized non-spatial outputs receive a presentation instead of silently 
   assert.equal(bundle.manifest.outputs[0].interpretation.rowCount, 2);
   assert.equal(bundle.manifest.outputs[0].presentations[0].kind, "table");
   assert.equal(bundle.manifest.outputs[0].presentations[0].state, "ready");
+  assert.equal(bundle.visualization, null);
+});
+
+test("property-only GeoJSON feature queries become ready tables instead of failed vectors", async () => {
+  const bundle = await featureQueryBundle({
+    type: "FeatureCollection",
+    features: [
+      { type: "Feature", geometry: null, properties: { name: "Germany", area: 540_112 } },
+      { type: "Feature", geometry: null, properties: { name: "Germany", area: 474_783 } },
+    ],
+  }, "feature-facts");
+
+  const output = bundle.manifest.outputs[0];
+  assert.equal(bundle.manifest.execution.sourceTool, "ogc_features_query");
+  assert.equal(bundle.manifest.overallState, "ready");
+  assert.equal(output.title, "Feature query result");
+  assert.equal(output.status, "ready");
+  assert.equal(output.interpretation.state, "recognized");
+  assert.equal(output.interpretation.semanticType, "table");
+  assert.equal(output.interpretation.rowCount, 2);
+  assert.equal(output.interpretation.error, undefined);
+  assert.equal(output.presentations[0].kind, "table");
+  assert.equal(output.presentations[0].state, "ready");
+  assert.equal(bundle.visualization, null);
+  assert.match(bundle.artifactEvents[0].detail, /^Operation execution:/);
+});
+
+test("an empty GeoJSON feature collection is a successful empty result", async () => {
+  const bundle = await featureQueryBundle({
+    type: "FeatureCollection",
+    features: [],
+  }, "feature-empty");
+
+  const output = bundle.manifest.outputs[0];
+  assert.equal(bundle.manifest.overallState, "ready");
+  assert.equal(output.status, "empty");
+  assert.equal(output.interpretation.state, "recognized");
+  assert.equal(output.interpretation.semanticType, "table");
+  assert.equal(output.interpretation.rowCount, 0);
+  assert.equal(output.presentations[0].kind, "table");
+  assert.equal(output.presentations[0].state, "ready");
+  assert.equal(bundle.visualization, null);
+});
+
+test("an explicitly empty standalone GeoJSON geometry is empty rather than invalid", async () => {
+  const bundle = await prepareResultArtifacts({
+    toolName: "ogc_jobs_get_results",
+    args: { server_id: "process-server", job_id: "empty-geometry" },
+    activityId: "empty-geometry",
+    result: structured({
+      ok: true,
+      server: { id: "process-server" },
+      response: { status_code: 200, content_type: "application/geo+json" },
+      data: { type: "GeometryCollection", geometries: [] },
+    }),
+    callTool: async () => assert.fail("unexpected hydration"),
+  });
+
+  const output = bundle.manifest.outputs[0];
+  assert.equal(bundle.manifest.overallState, "ready");
+  assert.equal(output.status, "empty");
+  assert.equal(output.interpretation.state, "recognized");
+  assert.equal(output.interpretation.semanticType, "vector");
+  assert.equal(output.interpretation.error, undefined);
+  assert.equal(bundle.visualization, null);
+});
+
+test("mixed null and drawable GeoJSON geometry remains a ready vector with map and table", async () => {
+  const bundle = await featureQueryBundle({
+    type: "FeatureCollection",
+    features: [
+      { type: "Feature", geometry: null, properties: { name: "No location" } },
+      pointCollection.features[0],
+    ],
+  }, "feature-mixed");
+
+  const output = bundle.manifest.outputs[0];
+  assert.equal(bundle.manifest.overallState, "ready");
+  assert.equal(output.status, "ready");
+  assert.equal(output.interpretation.state, "recognized");
+  assert.equal(output.interpretation.semanticType, "vector");
+  assert.equal(output.presentations.find((item) => item.kind === "map")?.state, "ready");
+  assert.equal(output.presentations.find((item) => item.kind === "table")?.state, "ready");
+  assert.equal(bundle.visualization.layers.length, 1);
+});
+
+test("malformed non-empty GeoJSON still fails strict spatial validation", async () => {
+  const bundle = await featureQueryBundle({
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      properties: { name: "Invalid location" },
+      geometry: { type: "Point", coordinates: ["not", "numbers"] },
+    }],
+  }, "feature-invalid");
+
+  const output = bundle.manifest.outputs[0];
+  assert.equal(output.status, "failed");
+  assert.equal(output.interpretation.state, "failed");
+  assert.equal(output.interpretation.semanticType, "vector");
+  assert.equal(output.interpretation.error.code, "spatial_preview_failed");
   assert.equal(bundle.visualization, null);
 });
 

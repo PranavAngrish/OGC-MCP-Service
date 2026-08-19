@@ -21,6 +21,11 @@ import {
   summarizeToolPurpose,
 } from "./activity-events.mjs";
 import { callMcpTool, listMcpTools } from "./mcp-client.mjs";
+import {
+  blockedEvidenceAnswer,
+  evidenceQualificationNote,
+  featureEvidence,
+} from "./evidence.mjs";
 import { findMemoryHandle, structuredToolPayload } from "./map-artifacts.mjs";
 import { AGENT_INSTRUCTIONS, MAX_TOOL_ROUNDS, toolLabel } from "./prompts.mjs";
 import {
@@ -29,6 +34,10 @@ import {
 } from "./result-artifacts.mjs";
 import { modelToolResultText } from "./model-output.mjs";
 import { isModelCallableTool, modelVisibleMcpTools } from "./tool-policy.mjs";
+import {
+  createWorkflowEventEmitter,
+  workflowManifestPayload,
+} from "./workflow-events.mjs";
 
 const sessions = new Map();
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
@@ -93,7 +102,14 @@ export function clearSession(sessionId) {
   clearApprovalSession(sessionId);
 }
 
-export async function runAgentTurn({ message, sessionId, responseId, emit, signal }) {
+async function executeAgentTurn({
+  message,
+  sessionId,
+  responseId,
+  emit,
+  emitWorkflowEvent,
+  signal,
+}) {
   const client = geminiClient();
   const callTool = (name, args, options = {}) => callMcpTool(name, args, {
     ...options,
@@ -106,11 +122,12 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
   ];
   const messages = [...priorMessages, { role: "user", content: message }];
   const mappedMemoryHandles = new Set();
+  let latestFeatureEvidence = null;
+  const featureQualifications = new Set();
   const turnStartedAt = Date.now();
   const emitEvent = (event, data, now = Date.now()) => {
     emit(event, { ...data, ...eventTiming(turnStartedAt, now) });
   };
-
   emitEvent("meta", { sessionId, model, provider: "gemini", toolCount: tools.length });
   emitEvent("status", {
     id: "understand",
@@ -118,7 +135,6 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
     detail: "Identifying the requested outcome, unresolved decisions, and relevant OGC capabilities.",
     status: "running",
   });
-
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     if (round > 0) {
       emitEvent("status", {
@@ -158,13 +174,41 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
       detail: "A safe next action has been selected from the connected services.",
       status: "complete",
     });
+    if (round === 0) {
+      emitWorkflowEvent("intent_recognized", {
+        activityId: "understand",
+        payload: {
+          title: "Request understood",
+          detail: "A safe next action was selected from the connected OGC services.",
+          status: "complete",
+        },
+      });
+    }
 
     const calls = assistantMessage.tool_calls || [];
     if (calls.length === 0) {
-      const answer = messageText(assistantMessage.content);
+      const proposedAnswer = messageText(assistantMessage.content);
+      const blockedAnswer = blockedEvidenceAnswer(latestFeatureEvidence);
+      const qualificationNote = evidenceQualificationNote({
+        safeToAnswer: latestFeatureEvidence?.safeToAnswer === true,
+        qualifications: [...featureQualifications],
+      });
+      const answer = blockedAnswer || (
+        qualificationNote && proposedAnswer
+          ? `${proposedAnswer}\n\n${qualificationNote}`
+          : proposedAnswer
+      );
       if (!answer) throw new Error("Gemini completed without returning an answer.");
       sessions.set(sessionId, { messages });
       emitEvent("answer", { content: answer });
+      emitWorkflowEvent("workflow_completed", {
+        activityId: `workflow-${responseId}`,
+        payload: {
+          title: "Workflow completed",
+          detail: "The response was completed successfully.",
+          status: "complete",
+        },
+      });
       emitEvent("done", { responseId: completion.id });
       return;
     }
@@ -195,6 +239,17 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
         round: round + 1,
         startedAt: toolStartedAt,
       }, toolStartedAtMs);
+      emitWorkflowEvent("step_started", {
+        activityId,
+        atMs: toolStartedAtMs,
+        payload: {
+          title: toolLabel(call.function.name),
+          detail: summarizeToolPurpose(call.function.name, args),
+          status: "running",
+          toolName: call.function.name,
+          round: round + 1,
+        },
+      });
 
       let output;
       if (!isModelCallableTool(call.function.name)) {
@@ -217,6 +272,16 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
           completedAt: new Date(rejectedAtMs).toISOString(),
           durationMs: Math.max(0, rejectedAtMs - toolStartedAtMs),
         }, rejectedAtMs);
+        emitWorkflowEvent("step_completed", {
+          activityId,
+          atMs: rejectedAtMs,
+          payload: {
+            title: toolLabel(call.function.name),
+            detail: "Rejected an internal-only renderer tool call.",
+            status: "error",
+            toolName: call.function.name,
+          },
+        });
         messages.push({
           role: "tool",
           tool_call_id: call.id,
@@ -230,6 +295,13 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
         if (signal?.aborted) throw new Error("The request was cancelled.");
         output = resultText(result);
         const resultPayload = structuredToolPayload(result);
+        const currentFeatureEvidence = featureEvidence(call.function.name, resultPayload);
+        if (currentFeatureEvidence) {
+          latestFeatureEvidence = currentFeatureEvidence;
+          for (const qualification of currentFeatureEvidence.qualifications || []) {
+            featureQualifications.add(qualification);
+          }
+        }
         const approvalRequest = registerApprovalRequest({
           sessionId,
           targetMessageId: responseId,
@@ -239,6 +311,15 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
           emitEvent("approval_request", {
             targetMessageId: responseId,
             request: approvalRequest,
+          });
+          emitWorkflowEvent("approval_required", {
+            activityId: `approval-${approvalRequest.challengeId}`,
+            payload: {
+              title: "Approval required",
+              detail: "The validated execution plan requires explicit user approval.",
+              status: "waiting",
+              request: approvalRequest,
+            },
           });
         }
         let artifacts = null;
@@ -261,6 +342,16 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
             stage: "orchestration",
             status: "error",
             detail: "The tool completed, but the gateway could not prepare its output manifest.",
+          });
+          emitWorkflowEvent("presentation_status", {
+            activityId,
+            payload: {
+              manifestId: `manifest-${activityId}`,
+              outputId: "result",
+              stage: "orchestration",
+              status: "error",
+              detail: "The tool completed, but the gateway could not prepare its output manifest.",
+            },
           });
         }
         output = modelToolResultText({
@@ -291,6 +382,21 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
           completedAt: new Date(toolCompletedAtMs).toISOString(),
           durationMs: Math.max(0, toolCompletedAtMs - toolStartedAtMs),
         }, toolCompletedAtMs);
+        emitWorkflowEvent("step_completed", {
+          activityId,
+          atMs: toolCompletedAtMs,
+          payload: {
+            title: toolLabel(call.function.name),
+            detail: summarizeToolOutcome(
+              call.function.name,
+              resultPayload,
+              Boolean(result?.isError),
+              artifacts?.manifest,
+            ),
+            status: result?.isError ? "error" : "complete",
+            toolName: call.function.name,
+          },
+        });
 
         const backgroundJob = extractBackgroundJob(call.function.name, result);
         if (backgroundJob) {
@@ -309,8 +415,31 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
         if (signal?.aborted) throw new Error("The request was cancelled.");
         if (artifacts?.manifest) {
           emitEvent("output_manifest", { activityId, manifest: artifacts.manifest });
+          emitWorkflowEvent("output_manifest_upserted", {
+            activityId: `artifact-${artifacts.manifest.manifestId}-manifest`,
+            payload: workflowManifestPayload(artifacts.manifest),
+          });
+          for (const outputArtifact of artifacts.manifest.outputs || []) {
+            if (!outputArtifact.clarificationRequest) continue;
+            emitWorkflowEvent("clarification_required", {
+              activityId: `clarification-${artifacts.manifest.manifestId}-${outputArtifact.id}`,
+              payload: {
+                title: `Clarification required: ${outputArtifact.title}`,
+                detail: outputArtifact.clarificationRequest.issues?.[0]?.question
+                  || "More information is required before this output can be presented safely.",
+                status: "waiting",
+                manifestId: artifacts.manifest.manifestId,
+                outputId: outputArtifact.id,
+                request: outputArtifact.clarificationRequest,
+              },
+            });
+          }
           for (const event of artifacts.artifactEvents || []) {
             emitEvent("artifact_status", { activityId, ...event });
+            emitWorkflowEvent("presentation_status", {
+              activityId,
+              payload: event,
+            });
           }
         }
         if (artifacts?.visualization && (!memoryHandle || !mappedMemoryHandles.has(memoryHandle))) {
@@ -347,6 +476,16 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
           completedAt: new Date(toolCompletedAtMs).toISOString(),
           durationMs: Math.max(0, toolCompletedAtMs - toolStartedAtMs),
         }, toolCompletedAtMs);
+        emitWorkflowEvent("step_completed", {
+          activityId,
+          atMs: toolCompletedAtMs,
+          payload: {
+            title: toolLabel(call.function.name),
+            detail: summarizeToolOutcome(call.function.name, errorPayload, true),
+            status: "error",
+            toolName: call.function.name,
+          },
+        });
       }
 
       messages.push({
@@ -372,6 +511,36 @@ export async function runAgentTurn({ message, sessionId, responseId, emit, signa
     status: "error",
   });
   throw new Error(`The agent exceeded the ${MAX_TOOL_ROUNDS}-round tool-call limit.`);
+}
+
+export async function runAgentTurn({ message, sessionId, responseId, emit, signal }) {
+  const emitWorkflowEvent = createWorkflowEventEmitter({
+    emit,
+    sessionId,
+    turnId: responseId,
+    targetMessageId: responseId,
+    runId: `agent-${responseId}`,
+  });
+  try {
+    return await executeAgentTurn({
+      message,
+      sessionId,
+      responseId,
+      emit,
+      emitWorkflowEvent,
+      signal,
+    });
+  } catch (error) {
+    emitWorkflowEvent("workflow_failed", {
+      activityId: `workflow-${responseId}`,
+      payload: {
+        title: "Workflow failed",
+        detail: "The workflow could not be completed.",
+        status: "error",
+      },
+    });
+    throw error;
+  }
 }
 
 export const agentStatus = () => ({

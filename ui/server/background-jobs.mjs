@@ -4,6 +4,10 @@ import {
   artifactStatusEvents,
   prepareResultArtifacts,
 } from "./result-artifacts.mjs";
+import {
+  createWorkflowEventEmitter,
+  workflowManifestPayload,
+} from "./workflow-events.mjs";
 
 const subscribers = new Map();
 const queuedEvents = new Map();
@@ -14,7 +18,7 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_RESULT_RETRY_INTERVAL_MS = 1_500;
 const DEFAULT_RESULT_AVAILABILITY_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RESULT_ATTEMPTS = 8;
-const MAX_QUEUED_EVENTS = 50;
+const MAX_QUEUED_EVENTS = 100;
 
 function boundedMilliseconds(value, fallback, minimum, maximum) {
   const parsed = Number(value);
@@ -298,6 +302,7 @@ function publishManifest(publish, job, manifest, startedAt, activityId = "") {
 export async function monitorBackgroundJob(job, {
   callTool = callMcpTool,
   publish = () => undefined,
+  emitWorkflowEvent: providedWorkflowEventEmitter,
   signal,
   initialDelayMs = DEFAULT_POLL_INTERVAL_MS,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
@@ -308,6 +313,59 @@ export async function monitorBackgroundJob(job, {
 } = {}) {
   const startedAt = Number.isFinite(job.startedAtMs) ? job.startedAtMs : Date.now();
   const monitoredJob = Number.isFinite(job.startedAtMs) ? job : { ...job, startedAtMs: startedAt };
+  const publishLegacyEvent = publish;
+  const emitWorkflowEvent = providedWorkflowEventEmitter || (
+    monitoredJob.sessionId && monitoredJob.targetMessageId
+      ? createWorkflowEventEmitter({
+        emit: publishLegacyEvent,
+        sessionId: monitoredJob.sessionId,
+        turnId: monitoredJob.targetMessageId,
+        targetMessageId: monitoredJob.targetMessageId,
+        runId: `job-${monitoredJob.serverId || "default"}-${monitoredJob.jobId}`,
+      })
+      : null
+  );
+  publish = (event, data) => {
+    if (emitWorkflowEvent && event === "output_manifest") {
+      emitWorkflowEvent("output_manifest_upserted", {
+        activityId: data.activityId || `background-${monitoredJob.jobId}`,
+        payload: workflowManifestPayload(data.manifest, {
+          title: "Background output manifest updated",
+        }),
+      });
+      for (const outputArtifact of data.manifest?.outputs || []) {
+        if (!outputArtifact.clarificationRequest) continue;
+        emitWorkflowEvent("clarification_required", {
+          activityId: `clarification-${data.manifest.manifestId}-${outputArtifact.id}`,
+          payload: {
+            title: `Clarification required: ${outputArtifact.title}`,
+            detail: outputArtifact.clarificationRequest.issues?.[0]?.question
+              || "More information is required before this output can be presented safely.",
+            status: "waiting",
+            manifestId: data.manifest.manifestId,
+            outputId: outputArtifact.id,
+            request: outputArtifact.clarificationRequest,
+          },
+        });
+      }
+    } else if (emitWorkflowEvent && event === "artifact_status") {
+      emitWorkflowEvent("presentation_status", {
+        activityId: data.activityId || `background-${monitoredJob.jobId}`,
+        payload: data,
+      });
+    } else if (emitWorkflowEvent && event === "job_status") {
+      const type = data.status === "error"
+        ? "workflow_failed"
+        : data.status === "complete"
+          ? "workflow_completed"
+          : "job_progress";
+      emitWorkflowEvent(type, {
+        activityId: `background-job-${data.serverId || "default"}-${data.jobId}`,
+        payload: data,
+      });
+    }
+    publishLegacyEvent(event, data);
+  };
   let consecutiveErrors = 0;
   let pollCount = 0;
   await wait(initialDelayMs, signal);
@@ -719,13 +777,25 @@ export function trackBackgroundJob({ sessionId, targetMessageId, job }, override
       startedAtMs: Date.now(),
     },
   };
+  tracked.emitWorkflowEvent = createWorkflowEventEmitter({
+    emit: (event, data) => eventFor(sessionId, event, data),
+    sessionId,
+    turnId: targetMessageId,
+    targetMessageId,
+    runId: `job-${job.serverId || "default"}-${job.jobId}`,
+  });
   trackedJobs.set(key, tracked);
-  eventFor(sessionId, "job_status", statusEvent(
+  const submittedEvent = statusEvent(
     tracked.job,
     "running",
     "Background process submitted; waiting for completion.",
     { stage: "submitted", pollCount: 0 },
-  ));
+  );
+  eventFor(sessionId, "job_status", submittedEvent);
+  tracked.emitWorkflowEvent("job_progress", {
+    activityId: `background-job-${job.serverId || "default"}-${job.jobId}`,
+    payload: submittedEvent,
+  });
   const pollIntervalMs = boundedMilliseconds(
     process.env.OGC_JOB_POLL_INTERVAL_MS,
     DEFAULT_POLL_INTERVAL_MS,
@@ -753,6 +823,7 @@ export function trackBackgroundJob({ sessionId, targetMessageId, job }, override
   tracked.promise = monitorBackgroundJob(tracked.job, {
     callTool: overrides.callTool || callMcpTool,
     publish: (event, data) => eventFor(sessionId, event, data),
+    emitWorkflowEvent: tracked.emitWorkflowEvent,
     signal: controller.signal,
     initialDelayMs: overrides.initialDelayMs ?? pollIntervalMs,
     pollIntervalMs: overrides.pollIntervalMs ?? pollIntervalMs,
@@ -779,11 +850,16 @@ export function stopTrackedJob(sessionId, jobId, serverId = "") {
   for (const [key, tracked] of matches) {
     tracked.controller.abort();
     trackedJobs.delete(key);
-    eventFor(sessionId, "job_status", statusEvent(
+    const completedEvent = statusEvent(
       tracked.job,
       "complete",
       "Process complete; result retrieved in the conversation.",
-    ));
+    );
+    eventFor(sessionId, "job_status", completedEvent);
+    tracked.emitWorkflowEvent?.("workflow_completed", {
+      activityId: `background-job-${tracked.job.serverId || "default"}-${tracked.job.jobId}`,
+      payload: completedEvent,
+    });
   }
 }
 

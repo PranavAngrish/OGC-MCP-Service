@@ -31,6 +31,27 @@ test("bounded discovery summaries preserve useful facts while removing spatial v
   assert.equal(output.includes("secret"), false);
 });
 
+test("validated feature queries preserve bounded coordinate-free fact rows", () => {
+  const rows = Array.from({ length: 38 }, (_, index) => ({
+    name: `Country ${index + 1}`,
+    area_km2: index + 1,
+  }));
+  const payload = {
+    ok: true,
+    data: {
+      facts: { columns: ["name", "area_km2"], rows, retrievedRows: 38, truncated: false },
+      evidence: { safeToAnswer: true, complete: true },
+    },
+  };
+  const output = modelToolResultText({
+    toolName: "ogc_features_query",
+    payload,
+    rawOutput: JSON.stringify(payload),
+  });
+  assert.match(output, /Country 38/);
+  assert.equal(output.includes("more items"), false);
+});
+
 test("memory summaries keep feature IDs and properties but strip coordinates and numeric arrays", () => {
   const summary = coordinateStrippedSummary({
     data: {
@@ -141,6 +162,17 @@ test("runtime features remain coordinate-free even when schema preservation exis
   assert.equal(output.includes("77.59"), false);
   assert.equal(output.includes("12.97"), false);
   assert.match(output, /spatial value omitted/);
+});
+
+test("capital coordinate property aliases are stripped from model summaries", () => {
+  const output = JSON.stringify(coordinateStrippedSummary({
+    name: "Example",
+    caplat: 52.5,
+    caplong: 13.4,
+  }));
+  assert.match(output, /Example/);
+  assert.equal(output.includes("52.5"), false);
+  assert.equal(output.includes("13.4"), false);
 });
 
 test("strict process outputs expose manifest facts but never raw vector coordinates", () => {

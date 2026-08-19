@@ -68,7 +68,13 @@ function withOutputManifest(message: Message, manifest: OutputManifestV1): Messa
 }
 
 function approvalFromEvent(event: StreamEvent): ApprovalRequest | null {
-  const candidate = event.data.request;
+  const workflow = event.data.event && typeof event.data.event === "object"
+    ? event.data.event as Record<string, unknown>
+    : {};
+  const payload = workflow.payload && typeof workflow.payload === "object"
+    ? workflow.payload as Record<string, unknown>
+    : {};
+  const candidate = event.data.request || payload.request;
   if (!candidate || typeof candidate !== "object") return null;
   const request = candidate as Record<string, unknown>;
   if (
@@ -140,7 +146,9 @@ export default function App() {
       }
       if (["job_status", "artifact_status", "workflow_event"].includes(event.event)) {
         const manifest = event.event === "workflow_event" ? manifestFromEvent(event) : null;
-        const updatedMessage = manifest ? withOutputManifest(message, manifest) : message;
+        const approval = event.event === "workflow_event" ? approvalFromEvent(event) : null;
+        const withManifest = manifest ? withOutputManifest(message, manifest) : message;
+        const updatedMessage = approval ? withApprovalRequest(withManifest, approval) : withManifest;
         return {
           ...updatedMessage,
           activities: updateActivities(updatedMessage.activities || [], event),
@@ -210,7 +218,9 @@ export default function App() {
             "workflow_event",
           ].includes(event.event)) {
             const manifest = event.event === "workflow_event" ? manifestFromEvent(event) : null;
-            const updatedMessage = manifest ? withOutputManifest(message, manifest) : message;
+            const approval = event.event === "workflow_event" ? approvalFromEvent(event) : null;
+            const withManifest = manifest ? withOutputManifest(message, manifest) : message;
+            const updatedMessage = approval ? withApprovalRequest(withManifest, approval) : withManifest;
             return {
               ...updatedMessage,
               activities: updateActivities(updatedMessage.activities || [], event),

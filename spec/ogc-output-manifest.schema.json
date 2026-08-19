@@ -82,6 +82,10 @@
           "type": "string",
           "maxLength": 200
         },
+        "sourceTool": {
+          "type": "string",
+          "maxLength": 200
+        },
         "trackingState": {
           "enum": [
             "available",

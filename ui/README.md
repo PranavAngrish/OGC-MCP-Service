@@ -86,6 +86,26 @@ The interface deliberately does not expose private chain-of-thought. It displays
 This gives users continuous, auditable feedback without presenting hidden model
 reasoning as if it were a reliable execution log.
 
+The gateway publishes every foreground turn and tracked background job through
+the shared [`activity/2`](../spec/ogc-workflow-event.schema.json) envelope. Each
+run has monotonic sequence numbers and explicit session, turn, target-message,
+activity, and optional run identifiers. Intent, tool steps, approvals,
+clarifications, job progress, output-manifest updates, presentation phases, and
+terminal outcomes use this versioned stream. The older named SSE events remain
+dual-published during migration so existing clients continue to work.
+Large manifests are not copied wholesale into `activity/2`: once a manifest is
+larger than 64 KiB, the workflow event carries a bounded lifecycle and
+presentation summary without inline representations or coordinates. The legacy
+manifest event and opaque artifact/memory handles remain available during the
+migration.
+
+For factual OGC Features questions, the agent first discovers a collection's
+query surface and then uses the structured, automatically paginated feature
+query. The gateway enforces the returned evidence gate: an incomplete or
+truncated query cannot become a factual final answer. Geometry stays in proxy
+memory for maps and downstream processes; the model receives only bounded
+coordinate-free fact rows and required scope qualifications.
+
 ## Geospatial result maps
 
 When a tool returns a completed result, the gateway looks for supported spatial

@@ -50,6 +50,23 @@ class AppTests(unittest.TestCase):
         self.assertEqual(server.name, "OGC API MCP Reference Server")
 
 
+class ToolContractParityTests(unittest.TestCase):
+    def test_machine_readable_contract_matches_registered_tool_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_config(
+                directory,
+                {"policy": {"expose_direct_execution_tools": True}},
+            )
+            mcp = create_mcp_server(path)
+
+        registered_names = {tool.name for tool in asyncio.run(mcp.list_tools())}
+        contract_path = Path(__file__).parents[1] / "spec" / "ogc-mcp-tool-contract.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract_names = {tool["name"] for tool in contract["tools"]}
+
+        self.assertEqual(contract_names, registered_names)
+
+
 class DirectExecutionGatingTests(unittest.TestCase):
     """Item #2: ogc_processes_execute must be absent unless explicitly enabled."""
 

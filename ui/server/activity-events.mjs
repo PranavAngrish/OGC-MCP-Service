@@ -122,6 +122,12 @@ export function summarizeToolPurpose(name, args = {}) {
       return `Discover available feature datasets${server}.`;
     case "ogc_features_describe_collection":
       return `Inspect metadata for collection ${identifier(args.collection_id, "unknown")}${server}.`;
+    case "ogc_features_describe_query_surface":
+      return `Discover filterable and returnable fields for collection ${identifier(args.collection_id, "unknown")}${server}.`;
+    case "ogc_features_query": {
+      const plan = parsedJsonArgument(args, "query_plan_json");
+      return `Run a validated, automatically paginated query on collection ${identifier(plan.collection_id, "unknown")}${plan.server_id ? ` on “${plan.server_id}”` : ""}.`;
+    }
     case "ogc_features_get_items": {
       const limit = Number(args.limit);
       const amount = Number.isFinite(limit) && limit > 0 ? `up to ${limit} features` : "features";
@@ -291,6 +297,15 @@ export function summarizeToolOutcome(name, payload, isError = false, outputManif
       return count === null
         ? `Feature data retrieved${suffix}.`
         : `${count} feature${count === 1 ? "" : "s"} returned${suffix}.`;
+    case "ogc_features_describe_query_surface": {
+      const fields = Array.isArray(payload?.fields) ? payload.fields.length : 0;
+      return `${fields} query-surface field${fields === 1 ? "" : "s"} discovered${suffix}.`;
+    }
+    case "ogc_features_query": {
+      const retrieved = Number(payload?.data?.pagination?.retrieved) || 0;
+      const complete = payload?.data?.evidence?.safeToAnswer === true;
+      return `${retrieved} feature${retrieved === 1 ? "" : "s"} retrieved${suffix}; evidence ${complete ? "is complete" : "needs refinement"}.`;
+    }
     case "ogc_features_get_item":
       return `Feature retrieved${suffix}.`;
     case "ogc_processes_describe": {

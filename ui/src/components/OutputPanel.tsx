@@ -312,7 +312,7 @@ function ImageRenderer({ output, representation }: RendererProps) {
   }
   return (
     <figure className="output-image-preview">
-      <img src={src} alt={`${output.title} process output`} loading="lazy" />
+      <img src={src} alt={`${output.title} output`} loading="lazy" />
       <figcaption>{representation?.mediaType || "Image output"}</figcaption>
     </figure>
   );
@@ -345,7 +345,7 @@ function UnknownRenderer({ output, representation, presentation }: RendererProps
       <div>
         <strong>{presentation.reason || "No in-browser renderer is available"}</strong>
         <p>
-          The process output was not discarded. It is identified as{" "}
+          The output was not discarded. It is identified as{" "}
           {output.interpretation.format || output.interpretation.semanticType || representation?.mediaType || "an unknown format"}.
         </p>
         {href && <a href={href} target="_blank" rel="noopener noreferrer">Open stored output</a>}
@@ -495,7 +495,9 @@ function OutputCard({ output }: { output: OutputArtifact }) {
 
       <dl className="output-metadata">
         {media && <div><dt>Format</dt><dd>{media}</dd></div>}
-        {output.interpretation.crs && (
+        {output.interpretation.crs
+          && ["vector", "raster", "coverage", "tiles"].includes(output.interpretation.semanticType)
+          && (
           <div>
             <dt>CRS</dt>
             <dd>
@@ -561,7 +563,7 @@ function OutputCard({ output }: { output: OutputArtifact }) {
               <PackageCheck size={20} aria-hidden="true" />
               <div>
                 <strong>Output retained without a preview</strong>
-                <p>The process result exists, but no presentation was advertised for it.</p>
+                <p>The result exists, but no presentation was advertised for it.</p>
               </div>
             </div>
           )}
@@ -591,6 +593,18 @@ function OutputCard({ output }: { output: OutputArtifact }) {
 function ManifestPanel({ manifest }: { manifest: OutputManifestV1 }) {
   const headingId = useId();
   const execution = manifest.execution;
+  const sourceTool = execution.sourceTool || "";
+  const outputFamily = sourceTool === "ogc_features_query"
+    ? { plural: "Feature query outputs", singular: "feature query output" }
+    : sourceTool.startsWith("ogc_features_")
+      ? { plural: "Feature service outputs", singular: "feature service output" }
+      : sourceTool.startsWith("ogc_records_")
+        ? { plural: "Record outputs", singular: "record output" }
+        : sourceTool.startsWith("ogc_common_")
+          ? { plural: "OGC resource outputs", singular: "OGC resource output" }
+          : sourceTool === "ogc_proxy_memory_retrieve"
+            ? { plural: "Stored outputs", singular: "stored output" }
+            : { plural: "Process outputs", singular: "process output" };
   const waitingForOutputs = manifest.outputs.length === 0
     && manifest.overallState === "pending"
     && ["submitted", "running"].includes(execution.state);
@@ -598,24 +612,24 @@ function ManifestPanel({ manifest }: { manifest: OutputManifestV1 }) {
   const monitoringUnavailable = execution.state === "running"
     && manifest.overallState === "unavailable";
   const emptyHeading = waitingForOutputs
-    ? "Preparing process outputs"
+    ? `Preparing ${outputFamily.plural.toLowerCase()}`
     : failedExecution
-      ? "Process ended without outputs"
+      ? "Operation ended without outputs"
       : monitoringUnavailable
         ? "Automatic monitoring stopped"
-        : "No process outputs were returned";
+        : `No ${outputFamily.plural.toLowerCase()} were returned`;
   const emptyDetail = waitingForOutputs
-    ? "Waiting for the process to publish retrievable outputs."
+    ? "Waiting for the operation to publish retrievable outputs."
     : failedExecution
-      ? `The process ${execution.state === "cancelled" ? "was cancelled" : "failed"} before an output could be presented.`
+      ? `The operation ${execution.state === "cancelled" ? "was cancelled" : "failed"} before an output could be presented.`
       : monitoringUnavailable
         ? "The process may still be running, but this session could not continue checking it automatically."
-        : "The process completed without a declared output that can be presented.";
+        : `The operation completed without a declared ${outputFamily.singular} that can be presented.`;
   return (
     <section className={`output-manifest output-manifest--${manifest.overallState}`} aria-labelledby={headingId}>
       <header className="output-manifest__header">
         <div className="output-manifest__heading">
-          <span className="output-manifest__eyebrow"><PackageCheck size={13} /> Process outputs</span>
+          <span className="output-manifest__eyebrow"><PackageCheck size={13} /> {outputFamily.plural}</span>
           <h3 id={headingId}>
             {manifest.outputs.length
               ? `${manifest.outputs.length} ${manifest.outputs.length === 1 ? "output" : "outputs"} returned`
@@ -664,7 +678,7 @@ function ManifestPanel({ manifest }: { manifest: OutputManifestV1 }) {
 export default function OutputPanel({ manifests }: { manifests: OutputManifestV1[] }) {
   if (!manifests.length) return null;
   return (
-    <div className="output-panels" aria-label="Process output presentations">
+    <div className="output-panels" aria-label="OGC output presentations">
       {manifests.map((manifest) => <ManifestPanel manifest={manifest} key={manifest.manifestId} />)}
     </div>
   );

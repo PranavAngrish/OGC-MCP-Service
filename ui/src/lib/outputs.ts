@@ -221,6 +221,7 @@ export function normalizeOutputManifest(value: unknown): OutputManifestV1 | null
       planId: text(execution.planId) || undefined,
       jobId: text(execution.jobId) || undefined,
       reportedStatus: text(execution.reportedStatus) || undefined,
+      sourceTool: text(execution.sourceTool) || undefined,
     },
     overallState: text(value.overallState, "pending") as OutputManifestV1["overallState"],
     outputs,
@@ -232,7 +233,23 @@ export function upsertOutputManifest(
   current: OutputManifestV1[],
   manifest: OutputManifestV1,
 ): OutputManifestV1[] {
-  const index = current.findIndex((item) => item.manifestId === manifest.manifestId);
+  const sameLifecycle = (candidate: OutputManifestV1): boolean => {
+    const serverId = candidate.execution.serverId;
+    const jobId = candidate.execution.jobId;
+    const planId = candidate.execution.planId;
+    if (serverId !== manifest.execution.serverId) return false;
+    // Async submission and later job-result manifests can have different
+    // server-generated IDs. They nevertheless describe one job and must
+    // occupy one UI card so a completed map cannot sit beside a stale spinner.
+    if (jobId && manifest.execution.jobId) return jobId === manifest.execution.jobId;
+    // A plan is executed at most once by the confirmation-gated workflow, so
+    // it is a safe fallback while an upstream server has not yet supplied a
+    // job identifier in one of the two responses.
+    return Boolean(planId && manifest.execution.planId && planId === manifest.execution.planId);
+  };
+  const index = current.findIndex((item) => (
+    item.manifestId === manifest.manifestId || sameLifecycle(item)
+  ));
   if (index < 0) return [...current, manifest].slice(-8);
   return current.map((item, itemIndex) => itemIndex === index ? manifest : item);
 }

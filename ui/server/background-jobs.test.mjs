@@ -473,6 +473,20 @@ test("tracked jobs deliver session-scoped status and map events", async () => {
   assert.equal(events[0].data.pollCount, 0);
   assert.equal(events[0].data.input.jobId, "event-job");
   assert.match(events[0].data.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  const workflowEvents = events.filter((item) => item.event === "workflow_event");
+  assert.ok(workflowEvents.length > 0);
+  assert.equal(workflowEvents[0].data.event.schemaVersion, "activity/2");
+  assert.equal(workflowEvents[0].data.event.type, "job_progress");
+  assert.equal(workflowEvents[0].data.event.sequence, 0);
+  assert.equal(workflowEvents[0].data.event.sessionId, sessionId);
+  assert.equal(workflowEvents[0].data.event.targetMessageId, "assistant-event-test");
+  assert.deepEqual(
+    workflowEvents.map((item) => item.data.event.sequence),
+    workflowEvents.map((_, index) => index),
+  );
+  assert.ok(workflowEvents.some((item) => item.data.event.type === "output_manifest_upserted"));
+  assert.ok(workflowEvents.some((item) => item.data.event.type === "presentation_status"));
+  assert.ok(workflowEvents.some((item) => item.data.event.type === "workflow_completed"));
   assert.ok(events.some((item) => item.event === "map_data" && item.data.targetMessageId === "assistant-event-test"));
   unsubscribe();
   clearBackgroundJobs(sessionId);

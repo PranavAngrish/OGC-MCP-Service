@@ -7,6 +7,65 @@ brands.
 The machine-readable contract lives in
 [`../spec/ogc-mcp-tool-contract.json`](../spec/ogc-mcp-tool-contract.json).
 
+## Contract Structure And Extensibility
+
+The contract is both a catalog of the reference server's current tool surface
+and a formal, Draft 2020-12 JSON-Schema-based vocabulary for future OGC API to
+MCP translations.
+
+- `$defs` contains reusable schemas for MCP arguments, result envelopes,
+  OGC HTTP bindings, modules, tool definitions, query plans, opaque handles,
+  and extension metadata.
+- `contract_document_schema` references the embedded schema that validates the
+  top-level contract document.
+- `modules` contains independently versioned translations. Each module declares
+  its MCP namespace, OGC conformance/profile context, dependencies, conceptual
+  translation, owned tools, and extension points.
+- `tools` remains a flat, compatibility-oriented catalog of the actual tool
+  surface. Every entry points to a reusable input schema and declares MCP
+  semantics, upstream mapping, result contract, preconditions, error codes,
+  and availability policy.
+
+The Features and Records modules are intentionally independent. A deployment or
+future implementation can reuse the Features translation without Records, or
+add a new module (for example, Coverages, EDR, Maps, Styles, or Tiles) without
+changing the existing module contracts. Additive extensions use `x-*` fields;
+breaking tool or required-field changes require a new major contract version.
+
+### Features Translation
+
+The Features module maps OGC collection and item resources to MCP discovery and
+retrieval tools, then adds a proxy-specific declarative query tool:
+
+```text
+/collections                         -> ogc_features_list_collections
+/collections/{collectionId}          -> ogc_features_describe_collection
+/queryables + schema + sample        -> ogc_features_describe_query_surface
+/collections/{collectionId}/items    -> ogc_features_get_items
+validated CQL2 + rel=next pagination -> ogc_features_query
+/items/{itemId}                      -> ogc_features_get_item
+```
+
+`FeatureQueryPlan` is a reusable JSON Schema defining bounded page and item
+limits, bbox, datetime, supported filter operators, property selection, and
+sorting. Its output has a formal evidence gate: factual answers are permitted
+only when `data.evidence.safeToAnswer=true`.
+
+### Records Translation
+
+The Records module is separately reusable and maps catalogue resources without
+coupling them to Features behavior:
+
+```text
+/collections                              -> ogc_records_list_collections
+/collections/{collectionId}/items?q=...   -> ogc_records_search
+/collections/{collectionId}/items/{id}    -> ogc_records_get_record
+```
+
+Records search defines its own free-text, bbox, limit, default-collection, and
+extension-query argument contract while sharing generic server selection,
+summary-mode, error-envelope, and proxy-memory schemas with the other modules.
+
 ## Result Envelope
 
 Most successful OGC operations return:
@@ -197,11 +256,37 @@ Lists feature collections.
 
 Retrieves metadata for one feature collection.
 
+### `ogc_features_describe_query_surface`
+
+Discovers the collection's usable query contract before a factual query is
+built. It merges collection metadata, conformance declarations, queryables, an
+optional feature schema, and one bounded sample. Each property is marked as
+filterable, returnable, and/or observed so incomplete queryables documents do
+not hide fields that are actually present in returned features.
+
+### `ogc_features_query`
+
+Accepts a structured JSON query plan instead of arbitrary query parameters. It
+validates property names and operators, translates filters to CQL2 text, follows
+same-origin `rel=next` links with page/item guards, stores the aggregated GeoJSON
+behind one memory handle, and exposes a coordinate-free facts table.
+The `candidate_ci` operator is deliberately discovery-only: its evidence gate
+remains closed until the client selects the intended aliases and issues a precise
+`eq` or `in` query.
+
+`data.evidence.safeToAnswer` is the factual answer gate. It is false when
+upstream retrieval is incomplete, requested fields are wholly absent, or the
+facts table could not represent every retrieved row. `evidence.qualifications`
+contains non-blocking but mandatory scope caveats, such as the distinction
+between bbox intersection and semantic membership in a named region.
+
 ### `ogc_features_get_items`
 
 Retrieves feature items from a collection. Summary mode is the default and
 returns `guidance.reference_href` plus `guidance.source` so a process can use
-the collection by reference.
+the collection by reference. It is not the analytical collection-query tool:
+proxy-memory offsets page only the already stored response, not additional
+upstream result pages. Use `ogc_features_query` for complete factual retrieval.
 
 ### `ogc_features_get_item`
 

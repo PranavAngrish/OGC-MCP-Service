@@ -343,6 +343,11 @@ class ProxyMemoryStore:
                 "operation": record.operation,
                 "server_id": record.server_id,
                 "total_features": total,
+                "stored_features": total,
+                "upstream_matched": data.get("numberMatched"),
+                "upstream_complete": data.get("queryCompleteness", {}).get("complete")
+                if isinstance(data.get("queryCompleteness"), dict)
+                else None,
                 "offset": offset,
                 "returned": len(sliced),
                 "has_more": end < total,

@@ -275,6 +275,7 @@ export type OutputManifestV1 = {
     planId?: string;
     jobId?: string;
     reportedStatus?: string;
+    sourceTool?: string;
   };
   overallState: OutputOverallState;
   outputs: OutputArtifact[];

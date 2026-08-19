@@ -12,6 +12,8 @@ export const BOUNDED_SUMMARY_TOOLS = new Set([
   "ogc_proxy_get_capabilities",
   "ogc_features_list_collections",
   "ogc_features_describe_collection",
+  "ogc_features_describe_query_surface",
+  "ogc_features_query",
   "ogc_features_get_items",
   "ogc_features_get_item",
   "ogc_records_list_collections",
@@ -29,7 +31,7 @@ export const BOUNDED_SUMMARY_TOOLS = new Set([
 ]);
 
 const SECRET_KEY = /^(?:authorization|proxy-authorization|cookie|set-cookie|password|passwd|x-api-key|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|client[_-]?secret|credentials?|signature|sig)$/i;
-const SPATIAL_KEY = /^(?:coordinates?|geometry|geometries|bbox|bounds|bounding_?box|extent|wkt|pos|poslist|x|y|z|lon|lng|long|longitude|lat|latitude|easting|northing)$/i;
+const SPATIAL_KEY = /^(?:coordinates?|geometry|geometries|bbox|bounds|bounding_?box|extent|wkt|pos|poslist|x|y|z|lon|lng|long|longitude|lat|latitude|caplat|caplong|caplon|caplng|easting|northing)$/i;
 const MANIFEST_KEY = /^(?:output_manifest|outputManifest)$/;
 const SCHEMA_CONTAINER_KEY = /^(?:inputs?|outputs?|parameters?|properties|patternProperties|definitions|\$defs|schema|inputSchema|outputSchema)$/i;
 const SCHEMA_DESCRIPTOR_KEY = /^(?:schema|type|title|description|contentMediaType|contentSchema|format|items|properties|required|enum|oneOf|anyOf|allOf|\$ref|minimum|maximum|minItems|maxItems|default|nullable)$/i;
@@ -99,13 +101,14 @@ export function coordinateStrippedSummary(value, depth = 0, key = "", options = 
     ) {
       return "[numeric array omitted]";
     }
-    const items = value.slice(0, MAX_ITEMS).map((item) => (
+    const maxItems = Number.isInteger(options.maxItems) ? options.maxItems : MAX_ITEMS;
+    const items = value.slice(0, maxItems).map((item) => (
       coordinateStrippedSummary(item, depth + 1, key, {
         ...options,
         inSchema: schemaScope,
       })
     ));
-    if (value.length > MAX_ITEMS) items.push(`[${value.length - MAX_ITEMS} more items]`);
+    if (value.length > maxItems) items.push(`[${value.length - maxItems} more items]`);
     return items;
   }
   if (typeof value !== "object") return redactText(value);
@@ -228,6 +231,7 @@ export function modelToolResultText({
     const summary = coordinateStrippedSummary(source, 0, "", {
       preserveProcessSchema: toolName === "ogc_processes_describe",
       inSchema: false,
+      maxItems: toolName === "ogc_features_query" ? 250 : MAX_ITEMS,
     });
     const serialized = JSON.stringify(summary);
     return artifacts?.modelContext

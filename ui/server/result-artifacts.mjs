@@ -74,6 +74,21 @@ function titleFor(value, fallback = "Process output") {
   return label ? `${label[0].toUpperCase()}${label.slice(1)}` : fallback;
 }
 
+function genericOutputTitle(toolName) {
+  if (toolName === "ogc_features_query") return "Feature query result";
+  if (toolName?.startsWith("ogc_features_")) return "Feature result";
+  if (toolName?.startsWith("ogc_records_")) return "Record result";
+  if (toolName?.startsWith("ogc_common_")) return "OGC resource result";
+  if (toolName === "ogc_proxy_memory_retrieve") return "Stored result";
+  return "Process output";
+}
+
+function operationNoun(toolName) {
+  return toolName?.startsWith("ogc_processes_") || toolName?.startsWith("ogc_jobs_")
+    ? "process"
+    : "operation";
+}
+
 function enumValue(value, allowed, fallback) {
   const normalized = text(value, 100).toLowerCase();
   return allowed.has(normalized) ? normalized : fallback;
@@ -656,6 +671,9 @@ function normalizeCanonicalManifest(raw, fallbackExecution, manifestId) {
     ...(text(execution.reportedStatus || fallbackExecution.reportedStatus, 200)
       ? { reportedStatus: text(execution.reportedStatus || fallbackExecution.reportedStatus, 200) }
       : {}),
+    ...(text(execution.sourceTool || fallbackExecution.sourceTool, 200)
+      ? { sourceTool: text(execution.sourceTool || fallbackExecution.sourceTool, 200) }
+      : {}),
   };
   const outputs = (Array.isArray(raw.outputs) ? raw.outputs : [])
     .slice(0, 100)
@@ -981,6 +999,80 @@ function geometryFacts(visualization) {
   };
 }
 
+const GEOJSON_GEOMETRY_TYPES = new Set([
+  "Point",
+  "MultiPoint",
+  "LineString",
+  "MultiLineString",
+  "Polygon",
+  "MultiPolygon",
+  "GeometryCollection",
+]);
+
+function coordinateArrayState(value) {
+  if (!Array.isArray(value)) return "invalid";
+  if (value.length === 0) return "empty";
+  let sawEmpty = false;
+  for (const item of value) {
+    if (typeof item === "number" && Number.isFinite(item)) return "present";
+    if (Array.isArray(item)) {
+      const nested = coordinateArrayState(item);
+      if (nested === "present") return "present";
+      if (nested === "empty") sawEmpty = true;
+      else return "invalid";
+    } else {
+      return "invalid";
+    }
+  }
+  return sawEmpty ? "empty" : "invalid";
+}
+
+function geometryContentState(value) {
+  if (value === null || value === undefined) return "absent";
+  if (!isObject(value) || !GEOJSON_GEOMETRY_TYPES.has(value.type)) return "invalid";
+  if (value.type === "GeometryCollection") {
+    if (!Array.isArray(value.geometries)) return "invalid";
+    if (value.geometries.length === 0) return "empty";
+    let sawEmpty = false;
+    for (const geometry of value.geometries) {
+      const state = geometryContentState(geometry);
+      if (state === "present") return "present";
+      if (state === "invalid") return "invalid";
+      if (state === "empty") sawEmpty = true;
+    }
+    return sawEmpty ? "empty" : "absent";
+  }
+  return coordinateArrayState(value.coordinates);
+}
+
+function geoJsonFeatureProfile(value) {
+  const features = value?.type === "FeatureCollection" && Array.isArray(value.features)
+    ? value.features
+    : value?.type === "Feature"
+      ? [value]
+      : null;
+  if (!features) {
+    if (!isObject(value) || !GEOJSON_GEOMETRY_TYPES.has(value.type)) return null;
+    const state = geometryContentState(value);
+    return {
+      semanticType: "vector",
+      empty: state === "empty",
+    };
+  }
+  const states = features.map((feature) => (
+    isObject(feature) && feature.type === "Feature"
+      ? geometryContentState(feature.geometry)
+      : "invalid"
+  ));
+  const hasSpatialContent = states.some((state) => state === "present" || state === "invalid");
+  const hasDeclaredEmptyGeometry = states.some((state) => state === "empty");
+  return {
+    rowCount: features.length,
+    semanticType: hasSpatialContent || hasDeclaredEmptyGeometry ? "vector" : "table",
+    empty: features.length === 0 || (hasDeclaredEmptyGeometry && !hasSpatialContent),
+  };
+}
+
 function interpretValue(value, declaredMediaType) {
   const mediaType = detectedMediaType(value, declaredMediaType);
   let previewData = value;
@@ -1029,6 +1121,7 @@ function interpretValue(value, declaredMediaType) {
   }
   let semanticType = "unknown";
   let state = "recognized";
+  const featureProfile = geoJsonFeatureProfile(previewData);
   if (mediaType.includes("gml") || mediaType.includes("geo+json") || mediaType.includes("wkt")) semanticType = "vector";
   else if (mediaType.startsWith("image/")) semanticType = "image";
   else if (/geotiff|tiff/.test(mediaType)) semanticType = "raster";
@@ -1053,6 +1146,8 @@ function interpretValue(value, declaredMediaType) {
   } else {
     state = "unsupported";
   }
+  if (featureProfile) semanticType = featureProfile.semanticType;
+  const rowCount = featureProfile?.rowCount ?? (Array.isArray(previewData) ? previewData.length : undefined);
   return {
     previewData,
     parser,
@@ -1063,8 +1158,9 @@ function interpretValue(value, declaredMediaType) {
       semanticType,
       format: mediaType,
       crs: { status: "missing" },
-      ...(semanticType === "table" && Array.isArray(previewData) ? { rowCount: previewData.length } : {}),
+      ...(semanticType === "table" && Number.isInteger(rowCount) ? { rowCount } : {}),
     },
+    empty: featureProfile?.empty === true,
   };
 }
 
@@ -1088,7 +1184,7 @@ function outputContainer(payload) {
   return data;
 }
 
-function legacyCandidates(payload) {
+function legacyCandidates(payload, toolName = "") {
   const container = outputContainer(payload);
   if (container === undefined || container === null) return [];
   if (
@@ -1098,7 +1194,7 @@ function legacyCandidates(payload) {
   ) {
     try {
       const parsed = JSON.parse(container);
-      return legacyCandidates({ ...payload, data: parsed });
+      return legacyCandidates({ ...payload, data: parsed }, toolName);
     } catch {
       // Malformed JSON is handled explicitly by the interpretation registry.
     }
@@ -1107,7 +1203,7 @@ function legacyCandidates(payload) {
     if (text(container.href, 8_192) && !Object.prototype.hasOwnProperty.call(container, "value")) {
       return [{
         id: "result",
-        title: "Referenced process output",
+        title: `Referenced ${genericOutputTitle(toolName).toLowerCase()}`,
         value: undefined,
         declaredMediaType: mediaTypeFrom(container, payload?.response?.content_type),
         referenceOnly: true,
@@ -1135,7 +1231,7 @@ function legacyCandidates(payload) {
     }
   }
   const unwrapped = unwrapValue(container, payload?.response?.content_type);
-  return [{ id: "result", title: "Process output", ...unwrapped }];
+  return [{ id: "result", title: genericOutputTitle(toolName), ...unwrapped }];
 }
 
 function presentationForSemantic(outputId, semanticType, visualization, interpretationState, artifactRef = "") {
@@ -1457,7 +1553,7 @@ function applyBrowserPresentation(manifest, visualizationsByOutput) {
   };
 }
 
-function legacyRedirectOutput(payload, execution, manifestId) {
+function legacyRedirectOutput(payload, execution, manifestId, toolName) {
   const location = text(payload?.response?.location || payload?.guidance?.location, 8_192);
   const declaredMediaType = text(payload?.response?.content_type, 300);
   const retrieval = {
@@ -1480,8 +1576,8 @@ function legacyRedirectOutput(payload, execution, manifestId) {
   }];
   const output = {
     id: "result",
-    title: "Referenced process output",
-    description: "The process response points to a separate output representation.",
+    title: `Referenced ${genericOutputTitle(toolName).toLowerCase()}`,
+    description: `The ${operationNoun(toolName)} response points to a separate output representation.`,
     status: "pending",
     retrieval,
     interpretation,
@@ -1503,7 +1599,7 @@ function legacyRedirectOutput(payload, execution, manifestId) {
     execution: { ...execution, state: execution.state === "failed" ? "failed" : "succeeded" },
     overallState: "pending",
     outputs: [output],
-    warnings: ["An HTTP redirect is an output reference, not a retrieved process result."],
+    warnings: [`An HTTP redirect is an output reference, not a retrieved ${operationNoun(toolName)} result.`],
   };
 }
 
@@ -1672,7 +1768,7 @@ export async function prepareResultArtifacts({
 
   const statusCode = responseStatus(originalPayload);
   if (statusCode && statusCode >= 300 && statusCode < 400 && text(originalPayload?.response?.location || originalPayload?.guidance?.location)) {
-    const manifest = legacyRedirectOutput(originalPayload, fallbackExecution, manifestId);
+    const manifest = legacyRedirectOutput(originalPayload, fallbackExecution, manifestId, toolName);
     const registeredManifest = registerManifestArtifacts(manifest, sessionId);
     return {
       manifest: registeredManifest,
@@ -1688,7 +1784,7 @@ export async function prepareResultArtifacts({
   if (hydrated.failed) {
     const output = {
       id: "result",
-      title: "Process output",
+      title: genericOutputTitle(toolName),
       status: "failed",
       retrieval: {
         state: "failed",
@@ -1721,7 +1817,7 @@ export async function prepareResultArtifacts({
     };
   }
 
-  const candidates = legacyCandidates(effectivePayload);
+  const candidates = legacyCandidates(effectivePayload, toolName);
   const prepared = candidates.map((candidate) => {
     if (candidate.referenceOnly) {
       const retrieval = {
@@ -1805,7 +1901,12 @@ export async function prepareResultArtifacts({
         ? { warnings: interpretationResult.warnings }
         : {}),
     };
-    if (interpretation.semanticType === "vector" && !localVisualization && interpretation.state === "recognized") {
+    if (
+      interpretation.semanticType === "vector"
+      && !localVisualization
+      && interpretation.state === "recognized"
+      && !interpretationResult.empty
+    ) {
       interpretation.state = "failed";
       interpretation.error = {
         code: "spatial_preview_failed",
@@ -1845,7 +1946,9 @@ export async function prepareResultArtifacts({
       output: {
         id: candidate.id,
         title: candidate.title,
-        status: outputState(retrieval, interpretation, presentations),
+        status: interpretationResult.empty
+          ? "empty"
+          : outputState(retrieval, interpretation, presentations),
         retrieval,
         interpretation,
         representations,
@@ -1926,6 +2029,7 @@ export function compactVerifiedResultContext(manifest) {
     execution: {
       state: manifest.execution?.state,
       serverId: manifest.execution?.serverId,
+      ...(manifest.execution?.sourceTool ? { sourceTool: manifest.execution.sourceTool } : {}),
       ...(manifest.execution?.processId ? { processId: manifest.execution.processId } : {}),
       ...(manifest.execution?.jobId ? { jobId: manifest.execution.jobId } : {}),
     },
@@ -1985,6 +2089,7 @@ function stageStatus(state, completed, failed) {
 
 export function artifactStatusEvents(manifest) {
   if (!isObject(manifest)) return [];
+  const noun = operationNoun(manifest.execution?.sourceTool);
   const events = [{
     manifestId: manifest.manifestId,
     outputId: "__execution__",
@@ -1994,7 +2099,7 @@ export function artifactStatusEvents(manifest) {
       ["succeeded", "cancelled"],
       ["failed"],
     ),
-    detail: `Process execution: ${manifest.execution?.state || "unknown"}.`,
+    detail: `${noun[0].toUpperCase()}${noun.slice(1)} execution: ${manifest.execution?.state || "unknown"}.`,
   }];
   for (const output of manifest.outputs || []) {
     events.push({

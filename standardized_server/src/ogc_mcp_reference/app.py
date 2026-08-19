@@ -83,7 +83,7 @@ To abandon a plan the user no longer wants, call ogc_proxy_confirm_plan(approved
 
 RULE 6 — NEVER USE RECALLED OR FABRICATED SPATIAL DATA.
 All coordinates, feature IDs, bounding boxes, and geometry values MUST come from
-live OGC API tool calls, not from model training memory.Example: If the user asks for
+live OGC API tool calls, not from model training memory. Example: If the user asks for
 features "near Rotterdam", call ogc_features_get_items with a Rotterdam bounding
 box — do NOT recall or hardcode feature coordinates, IDs, or properties from
 training data. Doing so bypasses the authoritative data source and violates the
@@ -109,7 +109,15 @@ If a plan_id from a prior turn is unavailable, call ogc_proxy_list_plans first.
 Use ogc_proxy_get_plan to inspect the current lifecycle state of any stored plan.
 
 For dataset discovery: ogc_records_search → ogc_records_get_record
-For vector data inspection: ogc_features_list_collections → ogc_features_get_items
+For a single known feature: ogc_features_list_collections → ogc_features_get_item
+For factual collection questions, temporal snapshots, comparisons, or counts:
+1. ogc_features_list_collections
+2. ogc_features_describe_query_surface
+3. ogc_features_query with structured filters, requested properties, and bounded limits
+Only use the facts table when data.evidence.safeToAnswer=true. If it is false,
+refine the query using evidence.reasons; do not fill gaps from training memory.
+Treat evidence.qualifications as mandatory scope caveats. In particular, bbox
+means spatial intersection, not membership in a named political or geographic region.
 
 ━━━ LARGE DATA & MEMORY HANDLES ━━━
 
@@ -120,9 +128,11 @@ ogc_jobs_get_results, ogc_proxy_execute_plan) default to
 response_mode="summary": the full payload is stored behind an opaque proxy
 memory handle and only a sanitized summary is returned to model context.
 
-When a tool returns a memory handle, use ogc_proxy_memory_retrieve with that
-handle and an offset/limit to page through the full dataset incrementally
-without copying everything into context at once.
+When a tool returns a memory handle, ogc_proxy_memory_retrieve pages only the
+payload already stored by the proxy. It never retrieves additional upstream
+pages. Check stored_features, upstream_matched, and upstream_complete before
+using it. For complete factual collection retrieval, use ogc_features_query,
+which follows validated same-origin rel=next links itself.
 
 Use response_mode="raw" only for intentionally small responses or
 low-level interoperability testing. NEVER use response_mode="raw" as a
@@ -904,6 +914,96 @@ def create_mcp_server(
             "features.describe_collection",
             lambda: features.describe_collection(collection_id, server_id),
         )
+
+    @mcp.tool()
+    def ogc_features_describe_query_surface(
+        collection_id: str,
+        server_id: str = "",
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Discover how one feature collection can be queried safely.
+
+        Call this before constructing a factual or analytical collection query.
+        It combines collection metadata, conformance, queryables, the advertised
+        feature schema, and one bounded sample. Returned fields explicitly state
+        whether they are filterable, returnable, or merely observed. This is
+        necessary because real servers sometimes omit useful returned properties
+        from their queryables document.
+
+        Args:
+            collection_id: Exact collection ID advertised by the server.
+            server_id: Registered Features server ID.
+            refresh: Ignore the in-process discovery cache when true.
+
+        Returns:
+            A bounded query surface with capabilities, fields, pagination policy,
+            conformance declarations, and non-fatal discovery warnings.
+        """
+        return invoke(
+            "features.describe_query_surface",
+            lambda: features.describe_query_surface(
+                collection_id,
+                server_id,
+                refresh=refresh,
+            ),
+        )
+
+    @mcp.tool()
+    def ogc_features_query(query_plan_json: str) -> dict[str, Any]:
+        """Execute a validated, automatically paginated feature query.
+
+        Use this instead of ogc_features_get_items for factual questions,
+        temporal snapshots, comparisons, counts, or multi-feature analysis.
+        The proxy validates properties and filters against the discovered query
+        surface, translates structured filters to CQL2 text, follows same-origin
+        rel=next links, and returns a coordinate-free facts table plus explicit
+        evidence completeness. Full geometry is retained behind one opaque memory
+        handle for the gateway renderer and downstream referenced processes.
+
+        query_plan_json supports:
+          server_id, collection_id, filters, combine, datetime, bbox, properties,
+          sortby, include_geometry, page_size, max_pages, and max_items.
+
+        Each filter has property, operator, and value. Supported operators are
+        eq, ne, lt, lte, gt, gte, like, contains_ci, candidate_ci, and in.
+        candidate_ci is discovery-only and must be followed by exact eq/in aliases.
+        Never answer a factual question when data.evidence.safeToAnswer is false; refine the query using
+        data.evidence.reasons instead. Versioned collections require an explicit
+        datetime instant or interval. Sort values may be "gwsdate", "-gwsdate",
+        "gwsdate ASC", or {"property":"gwsdate","order":"asc"}. Geometry is
+        excluded by default; set include_geometry=true only when the user needs a map.
+
+        Args:
+            query_plan_json: Structured query plan encoded as one JSON object.
+
+        Returns:
+            Model-safe facts, pagination/completeness evidence, query provenance,
+            and an opaque full-geometry memory handle.
+        """
+        def callback() -> dict[str, Any]:
+            plan = parse_json_object(
+                query_plan_json,
+                label="query_plan_json",
+                allow_empty=False,
+            )
+            result = features.query(plan)
+            feature_collection = result.pop("_feature_collection")
+            record = runtime.memory.store(
+                operation="features.query",
+                server_id=str(result.get("server", {}).get("id", "")),
+                data=feature_collection,
+                summary=result["data"],
+            )
+            result["memory"] = {
+                "handle": record.handle,
+                "stored_features": len(feature_collection.get("features", [])),
+                "upstream_matched": feature_collection.get("numberMatched"),
+                "upstream_complete": feature_collection.get("queryCompleteness", {}).get("complete"),
+                "usage": "Do not retrieve this handle for factual answers; data.facts is the complete model-safe facts envelope when evidence.safeToAnswer is true.",
+            }
+            return result
+
+        return invoke("features.query", callback)
 
     @mcp.tool()
     def ogc_features_get_items(

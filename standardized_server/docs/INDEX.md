@@ -10,6 +10,7 @@ the reference server.
 | [Product Overview](PRODUCT.md) | What the project is, who it is for, and what problem it solves. |
 | [Quickstart](QUICKSTART.md) | How to install, configure, run, and smoke-test the server. |
 | [Architecture](ARCHITECTURE.md) | How the runtime, modules, proxy services, workflow, and stores fit together. |
+| [Complete System Flow and Rendering Architecture](SYSTEM_FLOW_REPORT.md) | How React, Node, Gemini, Python, memory, artifacts, and UI renderers work end to end. |
 | [Codebase Tour](CODEBASE_TOUR.md) | Where code lives and what each file or package owns. |
 | [React User Interface](UI.md) | How to run and understand the conversational React and LLM gateway. |
 

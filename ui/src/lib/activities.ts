@@ -326,6 +326,28 @@ export function updateActivities(current: Activity[], event: StreamEvent): Activ
     if (workflow.schemaVersion !== "activity/2") return current;
     const payload = asRecord(workflow.payload) || {};
     const type = String(workflow.type || "step_started");
+    if (type === "output_manifest_upserted") {
+      return updateActivities(current, {
+        event: "output_manifest",
+        data: { ...payload, timestamp: workflow.timestamp },
+      });
+    }
+    if (type === "presentation_status") {
+      return updateActivities(current, {
+        event: "artifact_status",
+        data: {
+          ...payload,
+          activityId: workflow.activityId,
+          timestamp: workflow.timestamp,
+        },
+      });
+    }
+    if (type === "job_progress") {
+      return updateActivities(current, {
+        event: "job_status",
+        data: { ...payload, timestamp: workflow.timestamp },
+      });
+    }
     const status = type === "workflow_failed"
       ? "error"
       : ["clarification_required", "approval_required"].includes(type)
@@ -344,7 +366,15 @@ export function updateActivities(current: Activity[], event: StreamEvent): Activ
       startedAt: stringValue(workflow.timestamp),
       completedAt: ["complete", "error", "cancelled"].includes(status) ? stringValue(workflow.timestamp) : undefined,
     };
-    return upsertActivity(current, activity);
+    const existing = current.find((item) => item.id === activity.id);
+    return upsertActivity(current, existing ? {
+      ...activity,
+      ...existing,
+      status: activity.status,
+      detail: activity.detail || existing.detail,
+      startedAt: existing.startedAt || activity.startedAt,
+      completedAt: activity.completedAt || existing.completedAt,
+    } : activity);
   }
 
   return current;

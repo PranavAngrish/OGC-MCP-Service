@@ -1,264 +1,1258 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://52north.org/ogc-mcp/spec/ogc-mcp-tool-contract-v0.2.json",
-  "title": "OGC API MCP Tool Contract",
-  "version": "0.2.0",
+  "$id": "https://52north.org/ogc-mcp/spec/ogc-mcp-tool-contract-v0.4.json",
+  "title": "OGC API to MCP Tool Contract",
+  "version": "0.4.0",
   "status": "experimental-reference",
-  "description": "Stable MCP tool names and OGC HTTP mappings implemented by the Python reference server. This is a project artifact for review and evolution, not an adopted OGC Standard.",
+  "license": "Apache-2.0",
+  "specification_kind": "machine-readable-contract-with-embedded-json-schema",
+  "description": "A formal, extensible translation from selected OGC API capabilities into stable Model Context Protocol (MCP) tools. The contract is an implementation-neutral profile for discovery, Features, Records, Processes, and proxy governance. It is a project artifact for interoperability research and is not an adopted OGC Standard.",
+  "contract_document_schema": {
+    "$ref": "#/$defs/ContractDocument"
+  },
+  "compatibility": {
+    "tool_name_stability": "Existing tool names are stable within major version 0 and use the ogc_ prefix.",
+    "additive_evolution": "New optional fields, modules, tools, and x-* extension fields may be added in a backward-compatible minor version.",
+    "breaking_change_policy": "Removing a tool, changing a required argument, changing a required result field, or changing a lifecycle transition requires a new major contract version.",
+    "consumer_rule": "Consumers MUST ignore unknown x-* fields and SHOULD ignore unknown optional fields they do not understand."
+  },
+  "normative_language": {
+    "MUST": "An absolute interoperability or safety requirement.",
+    "SHOULD": "A strong recommendation; deviations require a documented reason.",
+    "MAY": "An optional capability or implementation choice."
+  },
+  "mcp_concepts": {
+    "tool": "A named MCP function with a JSON Schema argument contract and a structured result envelope.",
+    "resource": "A read-only MCP URI that exposes non-secret documentation or registry metadata.",
+    "server_id": "An opaque operator-controlled identifier selecting a configured OGC deployment; it is never an arbitrary URL supplied by an MCP caller.",
+    "proxy_memory_handle": "An opaque mem_* capability referring to full upstream data retained outside model context.",
+    "artifact_handle": "An opaque art_* capability referring to a bounded, canonical or original output representation.",
+    "summary_mode": "A model-safe response mode that stores the full payload in proxy memory and returns bounded, sanitized facts instead.",
+    "human_confirmation": "A gateway or client-controlled decision recorded against an immutable execution-plan snapshot before state-changing process execution."
+  },
   "principles": [
-    "MCP clients select operator-registered server IDs, never arbitrary outbound hosts.",
-    "Credentials are injected by the MCP server and are never accepted as tool arguments.",
-    "OGC API discovery precedes execution.",
-    "Process input and output identifiers are preserved exactly as advertised by the upstream server.",
-    "Large datasets should be passed by reference when the upstream process supports references.",
-    "Every tool returns a structured result envelope with ok, operation, server, request, response, and data fields.",
-    "Tools that can return large or unbounded upstream payloads default to response_mode=\"summary\" and store the full payload behind an opaque proxy memory handle.",
-    "Unmediated process execution (no human-confirmation gate) is opt-in at the server-configuration level, not the default tool surface."
+    "MCP callers select operator-registered server IDs; they never provide arbitrary upstream base URLs.",
+    "Credentials are injected by the proxy from operator-controlled configuration and are never MCP tool arguments or model-visible result values.",
+    "Discovery precedes use: clients inspect collections, conformance, query surfaces, and process descriptions before constructing dependent requests.",
+    "Process identifiers, input identifiers, output identifiers, media types, and occurrence constraints are preserved exactly as advertised by an upstream process description.",
+    "Potentially large upstream payloads default to summary mode and remain behind opaque proxy-memory handles.",
+    "Every expected failure is represented by ok=false, operation, and a stable machine-readable error code.",
+    "State-changing process execution uses a stored plan and explicit human confirmation unless the operator intentionally exposes low-level direct-execution tools.",
+    "Referenced output retrieval is separately bounded, origin-validated, and represented through versioned output artifacts."
+  ],
+  "extension_points": [
+    {
+      "id": "module-extension",
+      "purpose": "Add an independently versioned translation for another OGC API family, for example Coverages, EDR, Maps, Styles, or Tiles.",
+      "requirements": [
+        "Use a new module id and non-conflicting MCP namespace.",
+        "Declare dependencies on shared contracts rather than copying them.",
+        "Declare OGC conformance URIs, capability predicates, and MCP tool definitions.",
+        "Use x-* fields for implementation-specific metadata."
+      ]
+    },
+    {
+      "id": "capability-extension",
+      "purpose": "Add a conformance-derived optional capability and a deterministic fallback policy.",
+      "requirements": [
+        "State the upstream conformance evidence used to enable the capability.",
+        "State the fallback or fail-closed behavior when it is absent.",
+        "Do not claim proxy-side geospatial computation unless it is implemented and declared."
+      ]
+    },
+    {
+      "id": "tool-extension",
+      "purpose": "Add an optional MCP tool without changing existing tools.",
+      "requirements": [
+        "Use an ogc_<module>_<verb> name.",
+        "Provide an input JSON Schema, upstream mapping, result contract, side-effect classification, and error behavior.",
+        "Declare model visibility and any operator policy gate."
+      ]
+    }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,199}$"
+    },
+    "OpaqueMemoryHandle": {
+      "type": "string",
+      "pattern": "^mem_[a-f0-9]{32}$"
+    },
+    "OpaqueArtifactHandle": {
+      "type": "string",
+      "pattern": "^art_[a-f0-9]{32}$"
+    },
+    "JsonObjectString": {
+      "type": "string",
+      "contentMediaType": "application/json",
+      "description": "A UTF-8 JSON object encoded as an MCP string argument. The proxy parses it and returns invalid_json_argument when it is not an object."
+    },
+    "ResponseMode": {
+      "type": "string",
+      "enum": ["summary", "raw"],
+      "default": "summary"
+    },
+    "ExecutionMode": {
+      "type": "string",
+      "enum": ["auto", "async", "sync-wait"],
+      "default": "auto"
+    },
+    "NoArguments": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ServerSelector": {
+      "type": "object",
+      "properties": {
+        "server_id": {
+          "type": "string",
+          "default": "",
+          "description": "Registered OGC server ID. An empty value selects the configured default for the relevant module."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ServerSummaryRequest": {
+      "type": "object",
+      "properties": {
+        "server_id": {
+          "type": "string",
+          "default": ""
+        },
+        "response_mode": {
+          "$ref": "#/$defs/ResponseMode"
+        },
+        "summary_fields_json": {
+          "allOf": [
+            { "$ref": "#/$defs/JsonObjectString" }
+          ],
+          "default": "{}",
+          "description": "Optional object: {\"fields\":[\"id\",\"properties.title\"]}. Geometry coordinate arrays are never eligible summary fields."
+        }
+      },
+      "additionalProperties": false
+    },
+    "CollectionSelector": {
+      "type": "object",
+      "required": ["collection_id"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/Identifier" },
+        "server_id": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "CollectionReadRequest": {
+      "type": "object",
+      "required": ["collection_id"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/Identifier" },
+        "server_id": { "type": "string", "default": "" },
+        "query_json": {
+          "allOf": [{ "$ref": "#/$defs/JsonObjectString" }],
+          "default": "{}",
+          "description": "Implementation-supported OGC API - Features query parameters such as bbox, datetime, limit, offset, filter, filter-lang, properties, or sortby."
+        },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": {
+          "allOf": [{ "$ref": "#/$defs/JsonObjectString" }],
+          "default": "{}"
+        }
+      },
+      "additionalProperties": false
+    },
+    "FeatureItemRequest": {
+      "type": "object",
+      "required": ["collection_id", "item_id"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/Identifier" },
+        "item_id": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "server_id": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "FeatureFilter": {
+      "type": "object",
+      "required": ["property", "operator", "value"],
+      "properties": {
+        "property": { "$ref": "#/$defs/Identifier" },
+        "operator": {
+          "type": "string",
+          "enum": ["eq", "ne", "lt", "lte", "gt", "gte", "like", "contains_ci", "candidate_ci", "in"]
+        },
+        "value": {}
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "operator": { "const": "in" } } },
+          "then": { "properties": { "value": { "type": "array", "minItems": 1 } } }
+        }
+      ]
+    },
+    "BoundingBox": {
+      "type": "array",
+      "oneOf": [
+        { "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+        { "items": { "type": "number" }, "minItems": 6, "maxItems": 6 }
+      ],
+      "description": "[minx, miny, maxx, maxy] or six-dimensional OGC API bbox coordinates."
+    },
+    "DateTimeQuery": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "start": { "type": "string", "default": ".." },
+            "end": { "type": "string", "default": ".." }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SortExpression": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[+-]?[A-Za-z_][A-Za-z0-9_.:-]*(\\s+(ASC|DESC))?$" },
+        {
+          "type": "object",
+          "required": ["property"],
+          "properties": {
+            "property": { "$ref": "#/$defs/Identifier" },
+            "order": { "type": "string", "enum": ["a", "asc", "ascending", "d", "desc", "descending"], "default": "asc" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "FeatureQueryPlan": {
+      "type": "object",
+      "required": ["collection_id"],
+      "properties": {
+        "server_id": { "type": "string", "default": "" },
+        "collection_id": { "$ref": "#/$defs/Identifier" },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/FeatureFilter" }, "maxItems": 20, "default": [] },
+        "combine": { "type": "string", "enum": ["and", "or"], "default": "and" },
+        "datetime": { "$ref": "#/$defs/DateTimeQuery" },
+        "bbox": { "$ref": "#/$defs/BoundingBox" },
+        "properties": { "type": "array", "items": { "$ref": "#/$defs/Identifier" }, "minItems": 1, "maxItems": 20 },
+        "sortby": {
+          "oneOf": [
+            { "$ref": "#/$defs/SortExpression" },
+            { "type": "array", "items": { "$ref": "#/$defs/SortExpression" }, "minItems": 1, "maxItems": 20 }
+          ]
+        },
+        "include_geometry": { "type": "boolean", "default": false },
+        "page_size": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 },
+        "max_pages": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 },
+        "max_items": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 1000 }
+      },
+      "additionalProperties": false,
+      "description": "A declarative, validated Features query. Property and sort identifiers MUST be advertised by ogc_features_describe_query_surface. Filters require CQL2 text capability. candidate_ci is discovery-only and cannot be used as final factual evidence."
+    },
+    "FeatureQueryToolInput": {
+      "type": "object",
+      "required": ["query_plan_json"],
+      "properties": {
+        "query_plan_json": {
+          "allOf": [{ "$ref": "#/$defs/JsonObjectString" }],
+          "contentSchema": { "$ref": "#/$defs/FeatureQueryPlan" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "FeatureQuerySurfaceInput": {
+      "type": "object",
+      "required": ["collection_id"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/Identifier" },
+        "server_id": { "type": "string", "default": "" },
+        "refresh": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "RecordsSearchInput": {
+      "type": "object",
+      "properties": {
+        "query_text": { "type": "string", "default": "", "description": "Free-text OGC API - Records q parameter." },
+        "bbox": { "type": "string", "default": "", "description": "Bounding box encoded as minLon,minLat,maxLon,maxLat." },
+        "limit": { "type": "integer", "minimum": 1, "default": 10 },
+        "server_id": { "type": "string", "default": "" },
+        "collection_id": { "type": "string", "default": "", "description": "Catalogue collection ID; empty selects the configured records default." },
+        "query_json": { "allOf": [{ "$ref": "#/$defs/JsonObjectString" }], "default": "{}", "description": "Additional implementation-supported Records query parameters." },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": { "allOf": [{ "$ref": "#/$defs/JsonObjectString" }], "default": "{}" }
+      },
+      "additionalProperties": false
+    },
+    "RecordRequest": {
+      "type": "object",
+      "required": ["record_id"],
+      "properties": {
+        "record_id": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "server_id": { "type": "string", "default": "" },
+        "collection_id": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "RelativeResourceInput": {
+      "type": "object",
+      "required": ["server_id", "path"],
+      "properties": {
+        "server_id": { "$ref": "#/$defs/Identifier" },
+        "path": { "type": "string", "pattern": "^/(?!/).*$", "description": "A relative upstream path. Absolute URLs are invalid." },
+        "query_json": { "allOf": [{ "$ref": "#/$defs/JsonObjectString" }], "default": "{}" },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": { "allOf": [{ "$ref": "#/$defs/JsonObjectString" }], "default": "{}" }
+      },
+      "additionalProperties": false
+    },
+    "MemoryRetrieveInput": {
+      "type": "object",
+      "required": ["handle"],
+      "properties": {
+        "handle": { "$ref": "#/$defs/OpaqueMemoryHandle" },
+        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+        "limit": { "type": "integer", "minimum": 1, "default": 50 }
+      },
+      "additionalProperties": false
+    },
+    "ArtifactRetrieveInput": {
+      "type": "object",
+      "required": ["handle"],
+      "properties": {
+        "handle": { "$ref": "#/$defs/OpaqueArtifactHandle" }
+      },
+      "additionalProperties": false
+    },
+    "SourceReference": {
+      "type": "object",
+      "required": ["server_id", "collection_id", "href"],
+      "properties": {
+        "server_id": { "$ref": "#/$defs/Identifier" },
+        "collection_id": { "$ref": "#/$defs/Identifier" },
+        "href": { "type": "string", "format": "uri" }
+      },
+      "additionalProperties": false
+    },
+    "PlanRequest": {
+      "type": "object",
+      "required": ["operation", "server_id", "process_id", "execute_request"],
+      "properties": {
+        "operation": { "const": "process_execute" },
+        "server_id": { "$ref": "#/$defs/Identifier", "description": "Registered Processes server ID." },
+        "process_id": { "$ref": "#/$defs/Identifier", "description": "Exact advertised process ID." },
+        "execute_request": { "type": "object", "description": "Process-specific execution body preserved without renaming advertised identifiers." },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/SourceReference" }, "default": [] },
+        "input_context": { "type": "object", "additionalProperties": { "type": "object" }, "default": {} }
+      },
+      "additionalProperties": false
+    },
+    "PlanCreateInput": {
+      "type": "object",
+      "required": ["plan_request_json"],
+      "properties": {
+        "plan_request_json": { "allOf": [{ "$ref": "#/$defs/JsonObjectString" }], "contentSchema": { "$ref": "#/$defs/PlanRequest" } }
+      },
+      "additionalProperties": false
+    },
+    "PlanUpdateInput": {
+      "type": "object",
+      "required": ["plan_id", "execute_request_json"],
+      "properties": {
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "execute_request_json": { "$ref": "#/$defs/JsonObjectString" },
+        "input_context_json": { "$ref": "#/$defs/JsonObjectString", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "PlanConfirmInput": {
+      "type": "object",
+      "required": ["plan_id", "approved"],
+      "properties": {
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "approved": { "type": "boolean" },
+        "actor": { "type": "string", "default": "user" },
+        "comment": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "PlanExecuteInput": {
+      "type": "object",
+      "required": ["plan_id"],
+      "properties": {
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "execution_mode": { "$ref": "#/$defs/ExecutionMode" },
+        "wait_seconds": { "type": "integer", "minimum": 1, "default": 10 },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": { "$ref": "#/$defs/JsonObjectString", "default": "{}" }
+      },
+      "additionalProperties": false
+    },
+    "ProcessesListInput": {
+      "type": "object",
+      "properties": {
+        "server_id": { "type": "string", "default": "" },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": { "$ref": "#/$defs/JsonObjectString", "default": "{}" },
+        "search_text": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "ProcessDescribeInput": {
+      "type": "object",
+      "required": ["process_id"],
+      "properties": {
+        "process_id": { "$ref": "#/$defs/Identifier" },
+        "server_id": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "DirectProcessExecuteInput": {
+      "type": "object",
+      "required": ["process_id", "execute_request_json"],
+      "properties": {
+        "process_id": { "$ref": "#/$defs/Identifier" },
+        "execute_request_json": { "$ref": "#/$defs/JsonObjectString" },
+        "server_id": { "type": "string", "default": "" },
+        "execution_mode": { "$ref": "#/$defs/ExecutionMode" },
+        "wait_seconds": { "type": "integer", "minimum": 1, "default": 10 },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": { "$ref": "#/$defs/JsonObjectString", "default": "{}" }
+      },
+      "additionalProperties": false
+    },
+    "JobsListInput": {
+      "type": "object",
+      "properties": {
+        "server_id": { "type": "string", "default": "" },
+        "query_json": { "$ref": "#/$defs/JsonObjectString", "default": "{}" }
+      },
+      "additionalProperties": false
+    },
+    "JobSelector": {
+      "type": "object",
+      "required": ["job_id"],
+      "properties": {
+        "job_id": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "server_id": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    },
+    "JobResultsInput": {
+      "type": "object",
+      "required": ["job_id"],
+      "properties": {
+        "job_id": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "server_id": { "type": "string", "default": "" },
+        "response_mode": { "$ref": "#/$defs/ResponseMode" },
+        "summary_fields_json": { "$ref": "#/$defs/JsonObjectString", "default": "{}" }
+      },
+      "additionalProperties": false
+    },
+    "ErrorEnvelope": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "details": {}
+      },
+      "additionalProperties": true
+    },
+    "ResultEnvelope": {
+      "type": "object",
+      "required": ["ok", "operation"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "operation": { "type": "string" },
+        "server": { "type": "object" },
+        "request": { "type": "object" },
+        "response": { "type": "object" },
+        "data": {},
+        "guidance": { "type": "object" },
+        "memory": { "$ref": "#/$defs/MemoryReference" },
+        "output_manifest": { "$ref": "#/$defs/OutputManifestReference" },
+        "error": { "$ref": "#/$defs/ErrorEnvelope" }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        { "if": { "properties": { "ok": { "const": false } } }, "then": { "required": ["error"] } }
+      ]
+    },
+    "MemoryReference": {
+      "type": "object",
+      "required": ["handle"],
+      "properties": {
+        "handle": { "$ref": "#/$defs/OpaqueMemoryHandle" },
+        "usage": { "type": "string" },
+        "stored_features": { "type": "integer", "minimum": 0 },
+        "upstream_complete": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "OutputManifestReference": {
+      "type": "object",
+      "required": ["schemaVersion", "manifestId", "execution", "overallState", "outputs"],
+      "properties": {
+        "schemaVersion": { "const": "ogc-output-manifest/1" },
+        "manifestId": { "type": "string" },
+        "execution": { "type": "object" },
+        "overallState": { "enum": ["pending", "ready", "partial", "unavailable"] },
+        "outputs": { "type": "array" }
+      },
+      "additionalProperties": true,
+      "description": "The full canonical schema is spec/ogc-output-manifest.schema.json."
+    },
+    "FeaturesQueryData": {
+      "type": "object",
+      "required": ["facts", "pagination", "evidence", "query"],
+      "properties": {
+        "facts": { "type": "object" },
+        "pagination": { "type": "object" },
+        "evidence": {
+          "type": "object",
+          "required": ["safeToAnswer", "complete", "reasons", "qualifications"],
+          "properties": {
+            "safeToAnswer": { "type": "boolean" },
+            "complete": { "type": "boolean" },
+            "reasons": { "type": "array", "items": { "type": "string" } },
+            "qualifications": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "query": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "McpSemantics": {
+      "type": "object",
+      "required": ["kind", "read_only", "idempotent", "model_visibility"],
+      "properties": {
+        "kind": { "const": "tool" },
+        "read_only": { "type": "boolean" },
+        "idempotent": { "type": "boolean" },
+        "model_visibility": { "enum": ["model_callable", "trusted_client_only", "human_action_only"] },
+        "annotations": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "HttpRequestMapping": {
+      "type": "object",
+      "required": ["method", "path_template"],
+      "properties": {
+        "method": { "enum": ["GET", "POST", "DELETE"] },
+        "path_template": { "type": "string" },
+        "query": { "type": "object" },
+        "headers": { "type": "object" },
+        "body_source": { "type": "string" },
+        "role": { "enum": ["primary", "discovery", "optional_discovery", "pagination", "job_control"] }
+      },
+      "additionalProperties": false
+    },
+    "UpstreamMapping": {
+      "type": "object",
+      "required": ["kind", "requests"],
+      "properties": {
+        "kind": { "enum": ["local", "proxy_state", "workflow", "ogc_http"] },
+        "requests": { "type": "array", "items": { "$ref": "#/$defs/HttpRequestMapping" } },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ResultContractReference": {
+      "type": "object",
+      "required": ["envelope", "data_contract"],
+      "properties": {
+        "envelope": { "const": "result-envelope" },
+        "data_contract": { "type": "string" },
+        "response_modes": { "type": "array", "items": { "$ref": "#/$defs/ResponseMode" } },
+        "summary_behavior": { "type": "string" },
+        "evidence_gate": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ToolDefinition": {
+      "type": "object",
+      "required": ["name", "module", "abstract_operation", "summary", "side_effect", "mcp", "upstream", "input_schema", "result"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^ogc_[a-z0-9_]+$" },
+        "module": { "type": "string" },
+        "abstract_operation": { "type": "string" },
+        "summary": { "type": "string" },
+        "side_effect": { "type": "boolean" },
+        "http_mapping": { "type": ["string", "null"] },
+        "mcp": { "$ref": "#/$defs/McpSemantics" },
+        "upstream": { "$ref": "#/$defs/UpstreamMapping" },
+        "input_schema": { "type": "object" },
+        "result": { "$ref": "#/$defs/ResultContractReference" },
+        "preconditions": { "type": "array", "items": { "type": "string" } },
+        "follow_ups": { "type": "array", "items": { "type": "string" } },
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "availability": { "type": "object" },
+        "examples": { "type": "array", "items": { "type": "object" } }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+    "ModuleDefinition": {
+      "type": "object",
+      "required": ["id", "title", "version", "mcp_namespace", "scope", "dependencies", "translation", "tools"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "title": { "type": "string" },
+        "version": { "type": "string" },
+        "mcp_namespace": { "type": "string" },
+        "scope": { "type": "string" },
+        "dependencies": { "type": "array", "items": { "type": "string" } },
+        "ogc_api": { "type": "object" },
+        "translation": { "type": "object" },
+        "tools": { "type": "array", "items": { "type": "string" } },
+        "extension_points": { "type": "array", "items": { "type": "string" } }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+    "ContractDocument": {
+      "type": "object",
+      "required": ["$schema", "$id", "title", "version", "status", "$defs", "modules", "tools"],
+      "properties": {
+        "$schema": { "const": "https://json-schema.org/draft/2020-12/schema" },
+        "$id": { "type": "string", "format": "uri" },
+        "title": { "type": "string" },
+        "version": { "type": "string" },
+        "status": { "type": "string" },
+        "$defs": { "type": "object" },
+        "modules": { "type": "array", "items": { "$ref": "#/$defs/ModuleDefinition" } },
+        "tools": { "type": "array", "items": { "$ref": "#/$defs/ToolDefinition" } }
+      },
+      "additionalProperties": true
+    }
+  },
+  "error_catalog": {
+    "invalid_argument": "The MCP argument is syntactically valid but violates a tool-level constraint.",
+    "invalid_json_argument": "A JSON-object string argument cannot be parsed or is not an object.",
+    "not_found": "A server-side identifier, plan, memory record, artifact, collection, feature, record, process, or job was not found.",
+    "unsupported_capability": "The selected server does not advertise a capability required for this operation.",
+    "security_policy_error": "A request violates operator-controlled URL, host, credential, reference, redirect, or private-network policy.",
+    "transport_error": "The bounded proxy could not complete an upstream request.",
+    "upstream_response_error": "The upstream OGC API returned an HTTP error response.",
+    "invalid_upstream_response": "The upstream payload did not match the response shape required by the mapped operation.",
+    "workflow_error": "A requested plan lifecycle transition is invalid or lacks human confirmation."
+  },
+  "shared_result_contracts": {
+    "result-envelope": { "$ref": "#/$defs/ResultEnvelope" },
+    "summary-mode": {
+      "description": "The full upstream payload is retained in proxy memory. The result includes a model-safe data summary and memory.handle. The model MUST NOT use raw geometry from this path for self-performed spatial analysis."
+    },
+    "features-query-evidence": {
+      "$ref": "#/$defs/FeaturesQueryData",
+      "answer_rule": "A factual client MUST make claims from data.facts only when data.evidence.safeToAnswer is true and MUST include data.evidence.qualifications."
+    },
+    "output-manifest": {
+      "schema_uri": "../../spec/ogc-output-manifest.schema.json",
+      "description": "Separates execution success from output retrieval, interpretation, and browser presentation readiness."
+    }
+  },
+  "modules": [
+    {
+      "id": "registry",
+      "title": "Operator Registry",
+      "version": "1.0",
+      "mcp_namespace": "ogc_servers_",
+      "scope": "Expose only non-secret metadata for configured OGC API deployments.",
+      "dependencies": [],
+      "translation": {
+        "ogc_concept": "Operator-owned deployment selection",
+        "mcp_concept": "A server-listing tool whose returned server_id is used by every networked module."
+      },
+      "tools": ["ogc_servers_list"]
+    },
+    {
+      "id": "proxy",
+      "title": "MCP Proxy Governance",
+      "version": "1.0",
+      "mcp_namespace": "ogc_proxy_",
+      "scope": "Capability discovery, opaque proxy memory, output artifact retrieval, and human-confirmed process plans.",
+      "dependencies": ["registry"],
+      "translation": {
+        "ogc_concept": "Cross-cutting server policy, process execution safety, and bounded data mediation",
+        "mcp_concept": "Stateful MCP tools with opaque handles and explicit workflow lifecycle transitions"
+      },
+      "tools": ["ogc_proxy_get_capabilities", "ogc_proxy_memory_list", "ogc_proxy_memory_retrieve", "ogc_proxy_artifact_retrieve", "ogc_proxy_create_plan", "ogc_proxy_get_plan", "ogc_proxy_list_plans", "ogc_proxy_update_plan", "ogc_proxy_confirm_plan", "ogc_proxy_execute_plan"],
+      "extension_points": ["capability-extension", "tool-extension"]
+    },
+    {
+      "id": "common",
+      "title": "OGC API Common",
+      "version": "1.0",
+      "mcp_namespace": "ogc_common_",
+      "scope": "Landing-page, conformance, and relative read-only resource discovery for registered servers.",
+      "dependencies": ["registry", "proxy"],
+      "ogc_api": {
+        "conformance": ["http://www.opengis.net/spec/ogcapi-common-1/1.0/conf/core"],
+        "base_paths": ["/", "/conformance", "/api", "/collections"]
+      },
+      "translation": {
+        "landing_page": "ogc_common_get_landing_page",
+        "conformance_document": "ogc_common_get_conformance",
+        "relative_resource": "ogc_common_get_resource"
+      },
+      "tools": ["ogc_common_get_landing_page", "ogc_common_get_conformance", "ogc_common_get_resource"]
+    },
+    {
+      "id": "features",
+      "title": "OGC API - Features Translation",
+      "version": "1.0",
+      "mcp_namespace": "ogc_features_",
+      "scope": "Discover vector collections, inspect query capabilities, retrieve individual features, and execute bounded evidence-aware collection queries.",
+      "dependencies": ["registry", "proxy", "common"],
+      "ogc_api": {
+        "conformance": [
+          "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core",
+          "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas30"
+        ],
+        "optional_capabilities": ["CQL2 text", "queryables", "sortables", "property selection", "temporal filtering", "CRS negotiation", "versioned features"],
+        "entities": ["collection", "feature item", "queryable property", "FeatureCollection"]
+      },
+      "translation": {
+        "collection_discovery": "MCP discovery tools expose /collections and /collections/{collectionId}.",
+        "query_surface": "A composite discovery tool merges collection metadata, conformance, queryables, sortables, schema, and a bounded sample.",
+        "feature_query": "A declarative MCP query plan is validated against that surface, translated to CQL2 text when applicable, and followed through same-origin rel=next pagination.",
+        "data_boundary": "The full GeoJSON FeatureCollection is retained behind mem_*; the model receives bounded coordinate-free facts and an explicit evidence gate."
+      },
+      "tools": ["ogc_features_list_collections", "ogc_features_describe_collection", "ogc_features_describe_query_surface", "ogc_features_query", "ogc_features_get_items", "ogc_features_get_item"],
+      "extension_points": ["capability-extension", "tool-extension"]
+    },
+    {
+      "id": "records",
+      "title": "OGC API - Records Translation",
+      "version": "1.0",
+      "mcp_namespace": "ogc_records_",
+      "scope": "Discover catalogue collections, perform bounded metadata searches, and retrieve a selected record for inspection of metadata and links.",
+      "dependencies": ["registry", "proxy", "common"],
+      "ogc_api": {
+        "conformance": ["http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/core"],
+        "entities": ["catalogue collection", "record", "record link", "spatial and temporal metadata"]
+      },
+      "translation": {
+        "catalogue_discovery": "The shared OGC /collections route is scoped to a Records deployment.",
+        "search": "Free text, bounding box, limit, and implementation-specific query parameters map to a collection items request.",
+        "record_inspection": "A record is retrieved by its upstream identifier and can guide selection of a data or service reference for later work.",
+        "data_boundary": "Potentially large catalogue results use the same summary mode and mem_* retrieval pattern as Features."
+      },
+      "tools": ["ogc_records_list_collections", "ogc_records_search", "ogc_records_get_record"],
+      "extension_points": ["capability-extension", "tool-extension"]
+    },
+    {
+      "id": "processes",
+      "title": "OGC API - Processes and Jobs",
+      "version": "1.0",
+      "mcp_namespace": "ogc_processes_ / ogc_jobs_",
+      "scope": "Discover processes, inspect exact schemas, submit operator-gated direct executions when enabled, and track asynchronous jobs.",
+      "dependencies": ["registry", "proxy", "common"],
+      "ogc_api": {
+        "conformance": ["http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/core"],
+        "entities": ["process", "process input", "process output", "job", "job result"]
+      },
+      "translation": {
+        "process_discovery": "GET /processes becomes a bounded MCP discovery tool.",
+        "schema_preservation": "GET /processes/{processId} exposes the upstream identifiers and input/output schemas without renaming them.",
+        "safe_execution": "The default MCP route is create plan → resolve → confirm → execute; direct execution is opt-in.",
+        "output_contract": "Execution and job results include an additive versioned output manifest."
+      },
+      "tools": ["ogc_processes_list", "ogc_processes_describe", "ogc_processes_execute", "ogc_jobs_list", "ogc_jobs_get_status", "ogc_jobs_get_results", "ogc_jobs_dismiss"]
+    }
   ],
   "tools": [
     {
       "name": "ogc_servers_list",
       "module": "registry",
+      "abstract_operation": "servers.list",
+      "summary": "List non-secret metadata for every enabled operator-registered OGC deployment.",
+      "side_effect": false,
       "http_mapping": null,
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List approved OGC servers" } },
+      "upstream": { "kind": "local", "requests": [], "notes": "Reads configured registry only." },
+      "input_schema": { "$ref": "#/$defs/NoArguments" },
+      "result": { "envelope": "result-envelope", "data_contract": "registered-server-list" },
+      "follow_ups": ["ogc_proxy_get_capabilities", "ogc_common_get_landing_page", "ogc_features_list_collections", "ogc_records_search", "ogc_processes_list"],
+      "errors": []
     },
     {
       "name": "ogc_proxy_get_capabilities",
       "module": "proxy",
-      "http_mapping": "GET /conformance",
+      "abstract_operation": "proxy.capabilities",
+      "summary": "Return cached conformance-derived capability flags and deterministic fallback rules for a registered server.",
       "side_effect": false,
-      "summary": "Return normalized capability flags and active fallback rules for a registered server."
+      "http_mapping": "GET /conformance (cached)",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Inspect server capabilities" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/conformance", "query": { "f": "json" }, "role": "discovery" }], "notes": "refresh=true bypasses the in-process capability cache." },
+      "input_schema": { "type": "object", "properties": { "server_id": { "type": "string", "default": "" }, "refresh": { "type": "boolean", "default": false } }, "additionalProperties": false },
+      "result": { "envelope": "result-envelope", "data_contract": "capability-profile" },
+      "errors": ["not_found", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_proxy_memory_list",
       "module": "proxy",
-      "http_mapping": null,
+      "abstract_operation": "proxy.memory.list",
+      "summary": "List metadata for non-expired proxy-memory records without returning their full payloads.",
       "side_effect": false,
-      "summary": "List handles and summaries for full payloads stored inside the proxy."
+      "http_mapping": null,
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List proxy memory" } },
+      "upstream": { "kind": "proxy_state", "requests": [], "notes": "Memory records are TTL-bound." },
+      "input_schema": { "$ref": "#/$defs/NoArguments" },
+      "result": { "envelope": "result-envelope", "data_contract": "proxy-memory-metadata-list" },
+      "errors": []
     },
     {
       "name": "ogc_proxy_memory_retrieve",
       "module": "proxy",
-      "http_mapping": null,
+      "abstract_operation": "proxy.memory.retrieve",
+      "summary": "Retrieve a bounded slice of data stored behind an opaque proxy-memory handle.",
       "side_effect": false,
-      "summary": "Retrieve stored data from a proxy memory handle with paginated slicing. For FeatureCollections, increments offset by limit until has_more is false. Avoids copying the entire stored payload into model context at once."
+      "http_mapping": null,
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Retrieve proxy-memory data" } },
+      "upstream": { "kind": "proxy_state", "requests": [], "notes": "This pages only the stored payload; it never fetches new upstream pages." },
+      "input_schema": { "$ref": "#/$defs/MemoryRetrieveInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "memory-slice" },
+      "preconditions": ["handle was returned by a prior summary-mode operation and has not expired."],
+      "errors": ["invalid_argument", "not_found"]
+    },
+    {
+      "name": "ogc_proxy_artifact_retrieve",
+      "module": "proxy",
+      "abstract_operation": "proxy.artifact.retrieve",
+      "summary": "Retrieve one bounded canonical or original process-output representation through an opaque artifact handle.",
+      "side_effect": false,
+      "http_mapping": null,
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "trusted_client_only", "annotations": { "title": "Retrieve output artifact" } },
+      "upstream": { "kind": "proxy_state", "requests": [], "notes": "A trusted renderer or download controller uses this capability; models do not receive large artifact bodies." },
+      "input_schema": { "$ref": "#/$defs/ArtifactRetrieveInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "artifact-representation" },
+      "errors": ["invalid_argument", "not_found"]
     },
     {
       "name": "ogc_proxy_create_plan",
       "module": "proxy",
-      "http_mapping": "LangGraph workflow: discovery-backed validation",
+      "abstract_operation": "proxy.create_plan",
+      "summary": "Create a stored process-execution plan after validating the process description, declared feature sources, and conservative input-schema constraints.",
       "side_effect": false,
-      "summary": "Create a stored execution plan after validating process and collection identifiers and, on a best-effort basis, the execute_request inputs against the process's declared input schema (required fields and simple type mismatches)."
+      "http_mapping": "Workflow: process discovery and description validation",
+      "mcp": { "kind": "tool", "read_only": false, "idempotent": false, "model_visibility": "model_callable", "annotations": { "title": "Create a reviewable process plan" } },
+      "upstream": { "kind": "workflow", "requests": [{ "method": "GET", "path_template": "/processes/{processId}", "role": "discovery" }, { "method": "GET", "path_template": "/collections/{collectionId}", "role": "discovery" }], "notes": "Persists a plan but does not execute the upstream process." },
+      "input_schema": { "$ref": "#/$defs/PlanCreateInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "execution-plan" },
+      "follow_ups": ["ogc_proxy_update_plan", "ogc_proxy_confirm_plan"],
+      "errors": ["invalid_json_argument", "invalid_argument", "not_found", "security_policy_error", "workflow_error"]
     },
     {
       "name": "ogc_proxy_get_plan",
       "module": "proxy",
-      "http_mapping": "LangGraph workflow state lookup",
+      "abstract_operation": "proxy.get_plan",
+      "summary": "Retrieve the full stored plan, exact execute request, validation state, and lifecycle status.",
       "side_effect": false,
-      "summary": "Retrieve a stored plan and its current lifecycle state."
+      "http_mapping": "Workflow state lookup",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Inspect execution plan" } },
+      "upstream": { "kind": "proxy_state", "requests": [], "notes": "Plan state is TTL-bound and may be stored in memory or Redis." },
+      "input_schema": { "type": "object", "required": ["plan_id"], "properties": { "plan_id": { "$ref": "#/$defs/Identifier" } }, "additionalProperties": false },
+      "result": { "envelope": "result-envelope", "data_contract": "execution-plan" },
+      "errors": ["invalid_argument", "not_found"]
+    },
+    {
+      "name": "ogc_proxy_list_plans",
+      "module": "proxy",
+      "abstract_operation": "proxy.list_plans",
+      "summary": "List compact metadata for non-expired plans without copying full execute requests.",
+      "side_effect": false,
+      "http_mapping": "Workflow state listing",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List execution plans" } },
+      "upstream": { "kind": "proxy_state", "requests": [], "notes": "Use get_plan for an exact execute request." },
+      "input_schema": { "$ref": "#/$defs/NoArguments" },
+      "result": { "envelope": "result-envelope", "data_contract": "execution-plan-summary-list" },
+      "errors": []
     },
     {
       "name": "ogc_proxy_update_plan",
       "module": "proxy",
-      "http_mapping": null,
+      "abstract_operation": "proxy.update_plan",
+      "summary": "Correct a stored plan in place, preserve its plan_id, and repeat validation until it is ready for confirmation.",
       "side_effect": false,
-      "summary": "Update the execute_request inputs of a needs_resolution plan and revalidate in place. Advances the plan to ready_for_confirmation when all inputs are valid, or returns an updated resolution_prompt with per_field_questions when issues remain. Preserves plan_id so the full lifecycle stays traceable under a single identifier. Always use this instead of creating a new plan when inputs need correction."
+      "http_mapping": "Workflow revalidation",
+      "mcp": { "kind": "tool", "read_only": false, "idempotent": false, "model_visibility": "model_callable", "annotations": { "title": "Update and revalidate a plan" } },
+      "upstream": { "kind": "workflow", "requests": [{ "method": "GET", "path_template": "/processes/{processId}", "role": "discovery" }], "notes": "The process body is not executed." },
+      "input_schema": { "$ref": "#/$defs/PlanUpdateInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "execution-plan" },
+      "preconditions": ["plan is in needs_resolution or ready_for_confirmation state."],
+      "follow_ups": ["ogc_proxy_confirm_plan"],
+      "errors": ["invalid_json_argument", "invalid_argument", "not_found", "workflow_error"]
     },
     {
       "name": "ogc_proxy_confirm_plan",
       "module": "proxy",
-      "http_mapping": "LangGraph workflow human-in-the-loop resume",
+      "abstract_operation": "proxy.confirm_plan",
+      "summary": "Record an explicit human decision for the exact plan snapshot previously displayed for review.",
       "side_effect": true,
-      "summary": "Record explicit human approval or rejection before execution."
+      "http_mapping": "Workflow human-in-the-loop transition",
+      "mcp": { "kind": "tool", "read_only": false, "idempotent": false, "model_visibility": "human_action_only", "annotations": { "title": "Approve or reject execution plan" } },
+      "upstream": { "kind": "workflow", "requests": [], "notes": "Records a plan decision; it does not send the upstream execution request." },
+      "input_schema": { "$ref": "#/$defs/PlanConfirmInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "execution-plan" },
+      "preconditions": ["A human has reviewed the exact execute_request."],
+      "follow_ups": ["ogc_proxy_execute_plan"],
+      "errors": ["invalid_argument", "not_found", "workflow_error"]
     },
     {
       "name": "ogc_proxy_execute_plan",
       "module": "proxy",
-      "http_mapping": "LangGraph workflow confirmed plan execution",
+      "abstract_operation": "proxy.execute_plan",
+      "summary": "Execute a previously validated and confirmed stored plan by plan_id only.",
       "side_effect": true,
-      "summary": "Execute a previously validated plan by plan_id only.",
-      "response_modes": ["summary", "raw"]
+      "http_mapping": "POST /processes/{processId}/execution via confirmed workflow plan",
+      "mcp": { "kind": "tool", "read_only": false, "idempotent": false, "model_visibility": "model_callable", "annotations": { "title": "Execute confirmed process plan" } },
+      "upstream": { "kind": "workflow", "requests": [{ "method": "POST", "path_template": "/processes/{processId}/execution", "headers": { "Prefer": "derived from execution_mode" }, "body_source": "stored plan.execute_request", "role": "primary" }], "notes": "The proxy rejects unconfirmed plans before issuing HTTP." },
+      "input_schema": { "$ref": "#/$defs/PlanExecuteInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "process-execution-or-job", "response_modes": ["summary", "raw"], "summary_behavior": "Stores complete result data behind mem_* and returns a sanitized summary plus output_manifest." },
+      "preconditions": ["plan status is confirmed."],
+      "follow_ups": ["ogc_jobs_get_status", "ogc_jobs_get_results"],
+      "errors": ["invalid_argument", "not_found", "workflow_error", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_common_get_landing_page",
       "module": "common",
+      "abstract_operation": "common.landing_page",
+      "summary": "Retrieve an OGC API landing page from a registered Common server.",
+      "side_effect": false,
       "http_mapping": "GET /",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get OGC landing page" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/ServerSelector" },
+      "result": { "envelope": "result-envelope", "data_contract": "ogc-landing-page" },
+      "follow_ups": ["ogc_common_get_conformance"],
+      "errors": ["not_found", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_common_get_conformance",
       "module": "common",
+      "abstract_operation": "common.conformance",
+      "summary": "Retrieve advertised conformance classes for a registered Common server.",
+      "side_effect": false,
       "http_mapping": "GET /conformance",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get OGC conformance" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/conformance", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/ServerSelector" },
+      "result": { "envelope": "result-envelope", "data_contract": "ogc-conformance-document" },
+      "errors": ["not_found", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_common_get_resource",
       "module": "common",
+      "abstract_operation": "common.get_resource",
+      "summary": "Read a relative resource from a registered server as a safe, read-only escape hatch for unmapped OGC API modules.",
+      "side_effect": false,
       "http_mapping": "GET {registered-server-relative-path}",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Read registered relative OGC resource" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "{relativePath}", "role": "primary" }], "notes": "Absolute URLs, scheme-relative paths, and embedded upstream hosts are rejected." },
+      "input_schema": { "$ref": "#/$defs/RelativeResourceInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "generic-ogc-resource", "response_modes": ["summary", "raw"], "summary_behavior": "Summary mode retains full data behind mem_*." },
+      "errors": ["invalid_argument", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_features_list_collections",
       "module": "features",
+      "abstract_operation": "features.list_collections",
+      "summary": "Discover vector-data collections exposed by a registered OGC API - Features server.",
+      "side_effect": false,
       "http_mapping": "GET /collections",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List feature collections" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/ServerSummaryRequest" },
+      "result": { "envelope": "result-envelope", "data_contract": "features-collection-list", "response_modes": ["summary", "raw"], "summary_behavior": "Summary mode returns bounded collection facts and mem_* for the original document." },
+      "follow_ups": ["ogc_features_describe_collection", "ogc_features_describe_query_surface", "ogc_features_get_items"],
+      "errors": ["not_found", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_features_describe_collection",
       "module": "features",
+      "abstract_operation": "features.describe_collection",
+      "summary": "Retrieve metadata, extent, CRS declarations, and links for one advertised feature collection.",
+      "side_effect": false,
       "http_mapping": "GET /collections/{collectionId}",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Describe feature collection" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/CollectionSelector" },
+      "result": { "envelope": "result-envelope", "data_contract": "features-collection-metadata" },
+      "preconditions": ["collection_id is an advertised collection identifier."],
+      "follow_ups": ["ogc_features_describe_query_surface", "ogc_features_get_items"],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
+    },
+    {
+      "name": "ogc_features_describe_query_surface",
+      "module": "features",
+      "abstract_operation": "features.describe_query_surface",
+      "summary": "Build a safe collection query contract by merging metadata, conformance, queryables, sortables, optional schema, and a bounded sample.",
+      "side_effect": false,
+      "http_mapping": "GET /collections/{collectionId}, /queryables, /sortables, /schema, /items?limit=1, and /conformance",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Discover feature query surface" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}", "role": "primary" }, { "method": "GET", "path_template": "/conformance", "role": "discovery" }, { "method": "GET", "path_template": "/collections/{collectionId}/queryables", "role": "optional_discovery" }, { "method": "GET", "path_template": "/collections/{collectionId}/sortables", "role": "optional_discovery" }, { "method": "GET", "path_template": "/collections/{collectionId}/schema", "role": "optional_discovery" }, { "method": "GET", "path_template": "/collections/{collectionId}/items", "query": { "f": "json", "limit": 1 }, "role": "optional_discovery" }], "notes": "Optional discovery failures become warnings rather than hiding fields observed in a valid sample." },
+      "input_schema": { "$ref": "#/$defs/FeatureQuerySurfaceInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "feature-query-surface" },
+      "follow_ups": ["ogc_features_query"],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
+    },
+    {
+      "name": "ogc_features_query",
+      "module": "features",
+      "abstract_operation": "features.query",
+      "summary": "Execute a validated, automatically paginated feature query and return coordinate-free facts with an explicit evidence-completeness gate.",
+      "side_effect": false,
+      "http_mapping": "Validated GET /collections/{collectionId}/items with optional CQL2 text and same-origin rel=next pagination",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Run validated feature query" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}/items", "query": { "f": "json", "limit": "min(page_size,max_items)", "filter": "derived CQL2 text", "filter-lang": "cql2-text when filters are present" }, "role": "primary" }, { "method": "GET", "path_template": "same-origin rel=next URL", "role": "pagination" }], "notes": "Pagination is bounded to 20 pages and 5,000 items. Cross-origin or path-changing next links fail closed." },
+      "input_schema": { "$ref": "#/$defs/FeatureQueryToolInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "features-query-evidence", "summary_behavior": "The aggregated FeatureCollection remains behind mem_*; data.facts contains bounded non-coordinate fact rows.", "evidence_gate": "Only data.evidence.safeToAnswer=true permits factual claims. candidate_ci results are discovery-only and must be refined with exact eq or in aliases." },
+      "preconditions": ["The proxy discovers the query surface before translating filters.", "Every requested filter property is advertised filterable; every sort property is advertised sortable.", "Versioned Features collections require an explicit datetime."],
+      "follow_ups": ["ogc_features_get_item", "ogc_proxy_memory_retrieve", "ogc_processes_list", "ogc_proxy_create_plan"],
+      "errors": ["invalid_json_argument", "invalid_argument", "unsupported_capability", "security_policy_error", "invalid_upstream_response", "transport_error", "upstream_response_error"],
+      "examples": [{ "query_plan": { "server_id": "features-server", "collection_id": "history", "filters": [{ "property": "name", "operator": "eq", "value": "Example" }], "datetime": { "start": "1900-01-01T00:00:00Z", "end": "1900-12-31T23:59:59Z" }, "properties": ["name", "validFrom"], "page_size": 100, "max_pages": 10, "max_items": 1000 } }]
     },
     {
       "name": "ogc_features_get_items",
       "module": "features",
-      "http_mapping": "GET /collections/{collectionId}/items",
+      "abstract_operation": "features.get_items",
+      "summary": "Retrieve an OGC API - Features collection items response, returning a process-safe reference href and a model-safe summary by default.",
       "side_effect": false,
-      "summary_fields": [
-        "id",
-        "geometry.type",
-        "properties.name",
-        "properties.title",
-        "properties.description"
-      ],
-      "response_modes": ["summary", "raw"],
-      "summary": "Default summary mode stores the full feature response in proxy memory and returns sanitized summary fields. Raw mode returns the full upstream FeatureCollection."
+      "http_mapping": "GET /collections/{collectionId}/items",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get feature items" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}/items", "query": { "f": "json", "additional": "query_json" }, "role": "primary" }], "notes": "A guidance.reference_href and guidance.source identify the exact selected collection query for a referenced process input." },
+      "input_schema": { "$ref": "#/$defs/CollectionReadRequest" },
+      "result": { "envelope": "result-envelope", "data_contract": "geojson-feature-collection", "response_modes": ["summary", "raw"], "summary_behavior": "summary is default; full GeoJSON remains behind mem_* and coordinates are stripped from model-facing fields." },
+      "follow_ups": ["ogc_features_get_item", "ogc_processes_list", "ogc_proxy_create_plan"],
+      "errors": ["invalid_json_argument", "invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_features_get_item",
       "module": "features",
-      "http_mapping": "GET /collections/{collectionId}/items/{featureId}",
-      "side_effect": false
+      "abstract_operation": "features.get_item",
+      "summary": "Retrieve one complete feature by collection and upstream item identifier.",
+      "side_effect": false,
+      "http_mapping": "GET /collections/{collectionId}/items/{itemId}",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get one feature" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}/items/{itemId}", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/FeatureItemRequest" },
+      "result": { "envelope": "result-envelope", "data_contract": "geojson-feature" },
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_records_list_collections",
       "module": "records",
+      "abstract_operation": "records.list_collections",
+      "summary": "Discover metadata catalogue collections exposed by a registered OGC API - Records server.",
+      "side_effect": false,
       "http_mapping": "GET /collections",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List records collections" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/ServerSummaryRequest" },
+      "result": { "envelope": "result-envelope", "data_contract": "records-collection-list", "response_modes": ["summary", "raw"], "summary_behavior": "Full collection metadata is retained behind mem_* in summary mode." },
+      "follow_ups": ["ogc_records_search"],
+      "errors": ["not_found", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_records_search",
       "module": "records",
-      "http_mapping": "GET /collections/{collectionId}/items",
+      "abstract_operation": "records.search",
+      "summary": "Search a selected OGC API - Records catalogue by free text, bounding box, limit, and implementation-specific parameters.",
       "side_effect": false,
-      "response_modes": ["summary", "raw"],
-      "summary": "Default summary mode stores the full catalogue response in proxy memory and returns sanitized summary fields. Use ogc_proxy_memory_retrieve with the returned handle to page through the full record list. Raw mode returns the original upstream response unchanged."
+      "http_mapping": "GET /collections/{collectionId}/items?q={query_text}&bbox={bbox}&limit={limit}",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Search geospatial catalogue" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}/items", "query": { "f": "json", "q": "query_text when non-empty", "bbox": "bbox when non-empty", "limit": "limit", "additional": "query_json" }, "role": "primary" }], "notes": "An omitted collection_id resolves to the operator-configured default Records collection; otherwise it is required." },
+      "input_schema": { "$ref": "#/$defs/RecordsSearchInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "records-search-result", "response_modes": ["summary", "raw"], "summary_behavior": "summary is default; full record collection remains behind mem_* for bounded inspection." },
+      "follow_ups": ["ogc_records_get_record", "ogc_proxy_memory_retrieve"],
+      "errors": ["invalid_json_argument", "invalid_argument", "not_found", "transport_error", "upstream_response_error"],
+      "examples": [{ "arguments": { "server_id": "records-server", "collection_id": "catalogue", "query_text": "flood risk", "bbox": "4.7,52.0,5.0,52.3", "limit": 10, "response_mode": "summary" } }]
     },
     {
       "name": "ogc_records_get_record",
       "module": "records",
+      "abstract_operation": "records.get_record",
+      "summary": "Retrieve complete metadata for a selected catalogue record, including links that may identify data or services for subsequent workflows.",
+      "side_effect": false,
       "http_mapping": "GET /collections/{collectionId}/items/{recordId}",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get catalogue record" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/collections/{collectionId}/items/{recordId}", "query": { "f": "json" }, "role": "primary" }], "notes": "An empty collection_id selects the configured Records default." },
+      "input_schema": { "$ref": "#/$defs/RecordRequest" },
+      "result": { "envelope": "result-envelope", "data_contract": "ogc-record" },
+      "follow_ups": ["ogc_features_list_collections", "ogc_processes_list"],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_processes_list",
       "module": "processes",
+      "abstract_operation": "processes.list",
+      "summary": "Discover executable processes, optionally filtering a bounded advertised process catalogue by keyword.",
+      "side_effect": false,
       "http_mapping": "GET /processes",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List OGC processes" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/processes", "query": { "f": "json" }, "role": "primary" }], "notes": "search_text is proxy-side bounded discovery filtering, not an assumed upstream query parameter." },
+      "input_schema": { "$ref": "#/$defs/ProcessesListInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "process-list", "response_modes": ["summary", "raw"], "summary_behavior": "Summary mode avoids copying large process catalogues into model context." },
+      "follow_ups": ["ogc_processes_describe"],
+      "errors": ["not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_processes_describe",
       "module": "processes",
+      "abstract_operation": "processes.describe",
+      "summary": "Retrieve an advertised process description and preserve exact upstream input and output identifiers.",
+      "side_effect": false,
       "http_mapping": "GET /processes/{processId}",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Describe OGC process" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/processes/{processId}", "query": { "f": "json" }, "role": "primary" }] },
+      "input_schema": { "$ref": "#/$defs/ProcessDescribeInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "process-description" },
+      "follow_ups": ["ogc_proxy_create_plan"],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_processes_execute",
       "module": "processes",
-      "http_mapping": "POST /processes/{processId}/execution",
+      "abstract_operation": "processes.execute",
+      "summary": "Low-level direct process execution for interoperability testing; user-facing clients should use the confirmed proxy-plan workflow instead.",
       "side_effect": true,
-      "response_modes": ["summary", "raw"],
-      "enabled_when": "policy.expose_direct_execution_tools == true",
-      "summary": "Unmediated direct execution tool, not registered at all unless the operator opts in via policy.expose_direct_execution_tools. Has no built-in human-confirmation gate; prefer ogc_proxy_create_plan / ogc_proxy_confirm_plan / ogc_proxy_execute_plan for user-facing workflows."
+      "http_mapping": "POST /processes/{processId}/execution",
+      "mcp": { "kind": "tool", "read_only": false, "idempotent": false, "model_visibility": "model_callable", "annotations": { "title": "Direct OGC process execution" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "POST", "path_template": "/processes/{processId}/execution", "headers": { "Prefer": "derived from execution_mode" }, "body_source": "execute_request_json", "role": "primary" }], "notes": "Every HTTP(S) input reference is recursively validated before transmission." },
+      "input_schema": { "$ref": "#/$defs/DirectProcessExecuteInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "process-execution-or-job", "response_modes": ["summary", "raw"], "summary_behavior": "Outputs include a canonical output_manifest and use mem_* in summary mode." },
+      "availability": { "when": "policy.expose_direct_execution_tools == true", "default": false },
+      "preconditions": ["Call ogc_processes_describe and construct exact process-specific input names before use."],
+      "follow_ups": ["ogc_jobs_get_status", "ogc_jobs_get_results"],
+      "errors": ["invalid_json_argument", "invalid_argument", "security_policy_error", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_jobs_list",
       "module": "processes",
+      "abstract_operation": "jobs.list",
+      "summary": "List asynchronous jobs advertised by an OGC API - Processes deployment.",
+      "side_effect": false,
       "http_mapping": "GET /jobs",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "List OGC jobs" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/jobs", "query": { "additional": "query_json" }, "role": "job_control" }] },
+      "input_schema": { "$ref": "#/$defs/JobsListInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "job-list" },
+      "errors": ["invalid_json_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_jobs_get_status",
       "module": "processes",
+      "abstract_operation": "jobs.get_status",
+      "summary": "Retrieve the current state of an asynchronous job and reconcile associated proxy-plan state when applicable.",
+      "side_effect": false,
       "http_mapping": "GET /jobs/{jobId}",
-      "side_effect": false
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get OGC job status" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/jobs/{jobId}", "query": { "f": "json" }, "role": "job_control" }] },
+      "input_schema": { "$ref": "#/$defs/JobSelector" },
+      "result": { "envelope": "result-envelope", "data_contract": "job-status" },
+      "follow_ups": ["ogc_jobs_get_results"],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_jobs_get_results",
       "module": "processes",
-      "http_mapping": "GET /jobs/{jobId}/results",
+      "abstract_operation": "jobs.get_results",
+      "summary": "Retrieve a completed job result and its additive canonical output manifest.",
       "side_effect": false,
-      "response_modes": ["summary", "raw"],
-      "summary": "Default summary mode stores the full job-results payload in proxy memory and returns a sanitized summary. Raw mode returns the full upstream results envelope."
+      "http_mapping": "GET /jobs/{jobId}/results",
+      "mcp": { "kind": "tool", "read_only": true, "idempotent": true, "model_visibility": "model_callable", "annotations": { "title": "Get OGC job results" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "GET", "path_template": "/jobs/{jobId}/results", "query": { "f": "json" }, "role": "job_control" }], "notes": "Referenced output retrieval, parsing, and presentation readiness are represented independently by output_manifest." },
+      "input_schema": { "$ref": "#/$defs/JobResultsInput" },
+      "result": { "envelope": "result-envelope", "data_contract": "process-output-manifest", "response_modes": ["summary", "raw"], "summary_behavior": "Full job result stays behind mem_* in summary mode." },
+      "preconditions": ["The job should be terminally successful before result retrieval; a successful envelope does not itself prove a map-ready output."],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     },
     {
       "name": "ogc_jobs_dismiss",
       "module": "processes",
-      "http_mapping": "DELETE /jobs/{jobId}",
+      "abstract_operation": "jobs.dismiss",
+      "summary": "Cancel or dismiss an asynchronous upstream job when the operator has explicitly exposed low-level direct-execution tools.",
       "side_effect": true,
-      "summary": "Always registered regardless of policy.expose_direct_execution_tools: cancelling/deleting a job is lower-risk and more reversible than starting one, so it is not gated behind the human-confirmation plan flow."
+      "http_mapping": "DELETE /jobs/{jobId}",
+      "mcp": { "kind": "tool", "read_only": false, "idempotent": false, "model_visibility": "human_action_only", "annotations": { "title": "Dismiss OGC job" } },
+      "upstream": { "kind": "ogc_http", "requests": [{ "method": "DELETE", "path_template": "/jobs/{jobId}", "role": "job_control" }] },
+      "input_schema": { "$ref": "#/$defs/JobSelector" },
+      "result": { "envelope": "result-envelope", "data_contract": "job-dismissal" },
+      "availability": { "when": "policy.expose_direct_execution_tools == true", "default": false },
+      "preconditions": ["A human or trusted client explicitly requested cancellation of this exact job."],
+      "errors": ["invalid_argument", "not_found", "transport_error", "upstream_response_error"]
     }
   ],
   "capability_fallbacks": {
-    "principle": "Proxy implementations should consult cached conformance before optional behavior and select deterministic fallbacks when capabilities are absent.",
-    "required_fallbacks": [
+    "principle": "A proxy MUST inspect cached conformance before optional behavior and report an explicit fallback or fail-closed outcome.",
+    "rules": [
       {
-        "id": "async_to_sync",
+        "id": "async_to_auto",
+        "module": "processes",
         "capability": "async",
         "preferred": "Prefer: respond-async with job polling",
-        "fallback": "Synchronous execution without Prefer: respond-async",
+        "fallback": "Use execution_mode=auto without an async preference; do not invent a job lifecycle.",
         "level": "MUST"
       },
       {
-        "id": "cql2_to_client_filter",
-        "capability": "cql2",
-        "preferred": "Server-side CQL2 filter query",
-        "fallback": "Fetch constrained data and apply the filter in the proxy",
+        "id": "cql2_absent",
+        "module": "features",
+        "capability": "cql2_text",
+        "preferred": "Translate declarative filters to server-side CQL2 text.",
+        "fallback": "Reject filter-bearing ogc_features_query with unsupported_capability; do not silently perform unbounded client-side filtering.",
         "level": "MUST"
       },
       {
-        "id": "crs_to_client_reproject",
-        "capability": "crs_negotiation",
-        "preferred": "Request data in EPSG:4326 from the server",
-        "fallback": "Fetch server-default CRS and reproject in the proxy",
+        "id": "property_selection_absent",
+        "module": "features",
+        "capability": "property_selection",
+        "preferred": "Request only the declared fact properties from the server.",
+        "fallback": "Accept the upstream response privately, strip geometry from model-facing facts, and emit a qualification that property selection was unavailable.",
+        "level": "MUST"
+      },
+      {
+        "id": "queryables_partial",
+        "module": "features",
+        "capability": "queryables",
+        "preferred": "Use the declared queryables schema as the authoritative field source.",
+        "fallback": "Merge bounded observed sample fields with queryables, sortables, and optional schema; observed-only fields are not marked filterable.",
         "level": "MUST"
       }
     ]
   },
   "workflow_lifecycle": {
     "backend": "LangGraph when available, deterministic local workflow otherwise",
-    "states": [
-      "needs_resolution",
-      "ready_for_confirmation",
-      "confirmed",
-      "rejected",
-      "running",
-      "completed",
-      "failed"
+    "states": ["needs_resolution", "ready_for_confirmation", "confirmed", "rejected", "running", "completed", "failed"],
+    "transitions": [
+      { "from": "create", "to": "needs_resolution", "when": "required inputs, units, CRS, sources, or simple literal types need clarification" },
+      { "from": "create|update", "to": "ready_for_confirmation", "when": "validation is complete and exact execute_request is available" },
+      { "from": "ready_for_confirmation", "to": "confirmed", "when": "a human explicitly approves the exact displayed request" },
+      { "from": "needs_resolution|ready_for_confirmation", "to": "rejected", "when": "a human rejects or abandons the plan" },
+      { "from": "confirmed", "to": "running", "when": "ogc_proxy_execute_plan submits the stored request" },
+      { "from": "running", "to": "completed|failed", "when": "the synchronous response or reconciled job status is terminal" }
     ],
-    "required_sequence": [
-      "ogc_proxy_create_plan",
-      "[if resolution_required=true] → ask user per_field_questions one-at-a-time → ogc_proxy_update_plan [loop until resolution_required=false]",
-      "show confirmation_prompt.execute_request verbatim to user",
-      "ogc_proxy_confirm_plan (only after explicit user approval)",
-      "ogc_proxy_execute_plan"
-    ],
-    "execution_rule": "ogc_proxy_execute_plan must reject any plan that is not in the confirmed state.",
-    "input_validation": "ogc_proxy_create_plan and ogc_proxy_update_plan perform a best-effort, conservative check of execute_request inputs against the process's declared input schema (required-but-missing inputs and simple literal type mismatches). It is intentionally not a full JSON Schema validator: reference-form inputs, multi-occurrence inputs, and union (oneOf/anyOf/allOf/$ref) schemas are left unchecked to avoid false positives that would block a legitimate call. Any flagged issue is appended to the plan's unresolved list and keeps plan status at needs_resolution.",
-    "resolution_loop": "When create_plan returns resolution_required=true, the LLM must present resolution_prompt.per_field_questions to the user one question at a time and call ogc_proxy_update_plan with corrected inputs. This loop repeats until resolution_required=false. The same plan_id is reused throughout; do not create a new plan.",
-    "confirmation_rule": "When confirmation_required=true, the LLM must show the user confirmation_prompt.execute_request verbatim (not paraphrased) before calling ogc_proxy_confirm_plan. If any input was assumed rather than explicitly provided by the user, the plan should be rejected and inputs re-collected.",
-    "hitl_rules": [
-      "Never assume vague spatial inputs (e.g. 'near XYZ', 'draw a circle around') — always ask the user for exact coordinates and distances.",
-      "Never auto-confirm a plan — the user must explicitly approve the execute_request.",
-      "One question at a time when collecting missing inputs from resolution_prompt.per_field_questions.",
-      "Use ogc_proxy_update_plan to correct inputs; do not recreate the plan from scratch."
+    "execution_rule": "ogc_proxy_execute_plan MUST reject a plan unless status is confirmed.",
+    "human_rules": [
+      "The exact execute_request MUST be shown verbatim before approval.",
+      "The client MUST NOT auto-confirm a plan or invent missing spatial inputs.",
+      "A needs_resolution plan MUST be updated in place with ogc_proxy_update_plan rather than recreated.",
+      "Direct execution tools are not a substitute for the human-confirmed plan workflow in user-facing clients."
     ]
   },
   "state_persistence": {
-    "principle": "Plan and proxy-memory state is stored through a pluggable key-value store so deployments can choose a topology-appropriate backend.",
     "backends": ["memory", "redis"],
-    "memory_backend": "Process-local, in a single Python process. Correct for a single-worker stdio deployment. Not visible across workers, replicas, or restarts.",
-    "redis_backend": "Required for a Streamable HTTP deployment running more than one worker process or replica behind a load balancer, so a plan created by one worker is visible to a confirm/execute call routed to another.",
-    "expiry": "Plans and proxy-memory records expire after an operator-configured TTL (defaults: plan_ttl_seconds=3600, memory_ttl_seconds=1800) so abandoned state does not accumulate forever. A TTL of 0 disables expiry."
+    "namespaces": ["plan", "memory", "artifact"],
+    "default_ttls_seconds": { "plan": 3600, "memory": 1800, "artifact": 1800 },
+    "topology": {
+      "memory": "Correct for one process such as a single-worker stdio deployment; state is not shared across replicas or restarts.",
+      "redis": "Required for multi-worker or multi-replica Streamable HTTP deployments that need plan and handle visibility across workers."
+    },
+    "multi_tenant_note": "Plan, memory, and artifact handles are deployment-wide at the Python MCP layer. A multi-tenant deployment MUST add principal or session scoping before broad exposure."
   }
 }

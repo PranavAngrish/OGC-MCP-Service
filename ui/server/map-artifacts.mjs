@@ -8,6 +8,7 @@ export const MAP_SOURCE_TOOLS = new Set([
   "ogc_proxy_artifact_retrieve",
   "ogc_common_get_resource",
   "ogc_features_get_items",
+  "ogc_features_query",
   "ogc_features_get_item",
   "ogc_records_search",
   "ogc_records_get_record",
