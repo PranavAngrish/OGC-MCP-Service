@@ -15,6 +15,40 @@ from .process_descriptions import ProcessDescriptionCache
 from .store import InMemoryStore, KeyValueStore
 
 
+_ASYNC_METADATA_KEYS = frozenset(
+    {
+        "jobID",
+        "jobId",
+        "id",
+        "status",
+        "message",
+        "progress",
+        "processID",
+        "processId",
+        "created",
+        "started",
+        "finished",
+        "links",
+    }
+)
+
+
+def _has_inline_process_output(data: Any) -> bool:
+    """Identify inline output before treating a Location as an async job.
+
+    IDEE/IGN returns getElevation values in the 200 response body but also
+    sends a Location header. Its /jobs endpoints then fail, so the inline
+    result must be considered completed without job reconciliation.
+    """
+    if not isinstance(data, dict) or not data:
+        return bool(data)
+    if set(data).issubset(_ASYNC_METADATA_KEYS) and (
+        data.get("status") or data.get("jobID") or data.get("jobId")
+    ):
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class PlanSource:
     """One declared data source used by a process execution request."""
@@ -1076,7 +1110,7 @@ def _execution_record(
     normalized_status = reported_status.casefold()
     asynchronous = (
         status_code in {201, 202}
-        or bool(location)
+        or (bool(location) and not _has_inline_process_output(result.get("data")))
         or manifest_execution.get("state") in {"submitted", "running"}
         or normalized_status in {"accepted", "queued", "pending", "submitted", "running"}
     )

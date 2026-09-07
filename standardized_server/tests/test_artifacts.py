@@ -760,6 +760,27 @@ class ArtifactInterpretationTests(unittest.TestCase):
         self.assertEqual(manifest["overallState"], "pending")
         self.assertEqual(manifest["outputs"], [])
 
+    def test_inline_output_does_not_promote_location_to_job_handle(self) -> None:
+        registry = build_registry()
+        pipeline, _ = _pipeline(registry)
+        manifest = pipeline.build(
+            _response(
+                {
+                    "id": "GetElevacion",
+                    "values": [[-3.7038, 40.4168, 648.1129760742188]],
+                },
+                status=200,
+                location="/jobs/inline-result",
+                path="/processes/getElevation/execution",
+            ),
+            server=registry.get(service="processes"),
+            operation="processes.execute",
+            process_id="getElevation",
+        )
+        self.assertEqual(manifest["execution"]["state"], "succeeded")
+        self.assertNotIn("jobId", manifest["execution"])
+        self.assertNotEqual(manifest["overallState"], "pending")
+
     def test_async_submission_without_tracking_handle_is_terminally_unavailable(
         self,
     ) -> None:

@@ -19,6 +19,24 @@ _PROCESS_PAGE_SIZE = 100
 _MAX_PROCESS_PAGES = 12
 
 
+_ASYNC_METADATA_KEYS = frozenset(
+    {
+        "jobID",
+        "jobId",
+        "id",
+        "status",
+        "message",
+        "progress",
+        "processID",
+        "processId",
+        "created",
+        "started",
+        "finished",
+        "links",
+    }
+)
+
+
 def _segment(value: str) -> str:
     return quote(value, safe="")
 
@@ -40,6 +58,24 @@ def _execution_prefer(execution_mode: str, wait_seconds: int) -> str:
         "execution_mode must be one of: auto, async, sync-wait.",
         {"execution_mode": execution_mode},
     )
+
+
+def _has_inline_output(data: Any) -> bool:
+    """Return whether a response contains output data, not only job metadata.
+
+    A few OGC API - Processes deployments return a synchronous result with
+    status 200 and also include a Location header pointing at a job resource.
+    The IDEE/IGN service does this, even though its job status/results routes
+    return 500. Inline output must take precedence over that misleading
+    Location header.
+    """
+    if not isinstance(data, dict) or not data:
+        return bool(data)
+    if set(data).issubset(_ASYNC_METADATA_KEYS) and (
+        data.get("status") or data.get("jobID") or data.get("jobId")
+    ):
+        return False
+    return True
 
 
 class ProcessesService:
@@ -265,7 +301,21 @@ class ProcessesService:
             prefer=_execution_prefer(execution_mode, wait_seconds),
         )
         guidance: dict[str, Any] = {}
-        if response.location or response.status_code in {201, 202}:
+        # Some servers return a Location header even when the response already
+        # contains the complete synchronous output. Only advertise the jobs
+        # follow-up tools when the response is genuinely asynchronous or has
+        # no inline output to consume.
+        is_async_response = (
+            response.status_code in {201, 202}
+            or (
+                isinstance(response.data, dict)
+                and str(response.data.get("status") or response.data.get("state") or "")
+                .casefold()
+                in {"accepted", "running", "queued", "pending", "submitted"}
+            )
+            or (bool(response.location) and not _has_inline_output(response.data))
+        )
+        if is_async_response:
             guidance = {
                 "next_tools": ["ogc_jobs_get_status", "ogc_jobs_get_results"],
                 "location": response.location,

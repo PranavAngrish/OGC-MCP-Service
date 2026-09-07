@@ -98,7 +98,13 @@ export function subscribeSessionEvents(
   onEvent: (event: StreamEvent) => void,
 ) {
   const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
-  for (const eventName of ["map_data", "job_status"] as const) {
+  for (const eventName of [
+    "map_data",
+    "job_status",
+    "output_manifest",
+    "artifact_status",
+    "workflow_event",
+  ] as const) {
     source.addEventListener(eventName, (event) => {
       try {
         onEvent({

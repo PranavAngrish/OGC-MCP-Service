@@ -22,6 +22,7 @@ the reference server.
 | [Proxy Workflow](PROXY_WORKFLOW.md) | How process execution is planned, resolved, confirmed, and executed. |
 | [Process Output Artifacts](OUTPUT_ARTIFACTS.md) | How inline and referenced outputs are resolved, interpreted, stored, and presented. |
 | [Configuration](CONFIGURATION.md) | How to configure servers, defaults, auth, security, limits, stores, and policy. |
+| [Real OGC Test Servers](REAL_OGC_TEST_SERVERS.md) | A public production-data OGC deployment, an optional config profile, and a full-potential test prompt. |
 | [Security Model](SECURITY.md) | Which boundaries protect credentials, upstream targets, references, and execution. |
 | [Development Guide](DEVELOPMENT.md) | How to work on the implementation safely. |
 | [Testing Guide](TESTING.md) | What the test suite covers and how to run it. |
@@ -35,6 +36,7 @@ the reference server.
 | Document | Use it when you want to know |
 | --- | --- |
 | [GSoC Final Report](gsoc/FINAL_REPORT.md) | The project story, implemented work, limitations, and next steps. |
+| [GSoC Final Blog Draft](gsoc/PranavAngrishGsoCFinalBlog.md) | A submission-ready narrative final update in the same style as the midterm blog. |
 | [GSoC Deliverables](gsoc/DELIVERABLES.md) | What was delivered and where each artifact lives. |
 | [GSoC Timeline](gsoc/TIMELINE.md) | A chronological view of the work. |
 | [Architecture Decision Records](adr/) | Important design decisions and their rationale. |

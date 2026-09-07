@@ -112,6 +112,36 @@ class ProcessesServiceTests(unittest.TestCase):
         self.assertEqual(result["response"]["status_code"], 201)
         self.assertEqual(result["guidance"]["location"], "/jobs/42")
 
+    def test_prefers_inline_result_over_misleading_location_header(self) -> None:
+        execute_body = {
+            "inputs": {
+                "geom": "POINT(-3.7038 40.4168)",
+                "formato": "wkt",
+                "crs": 4326,
+                "withCoord": True,
+                "outputFormat": "array",
+            }
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/processes/getElevation/execution")
+            return httpx.Response(
+                200,
+                headers={"Location": "/jobs/upstream-bug"},
+                json={
+                    "id": "GetElevacion",
+                    "values": [[-3.7038, 40.4168, 648.1129760742188]],
+                },
+            )
+
+        service = ProcessesService(
+            build_registry(),
+            OgcHttpClient(transport=httpx.MockTransport(handler)),
+        )
+        result = service.execute("getElevation", execute_body)
+        self.assertNotIn("guidance", result)
+        self.assertEqual(result["data"]["values"][0][2], 648.1129760742188)
+
     def test_rejects_unapproved_reference_before_network_call(self) -> None:
         def handler(_: httpx.Request) -> httpx.Response:
             self.fail("Network transport should not be called for rejected references.")

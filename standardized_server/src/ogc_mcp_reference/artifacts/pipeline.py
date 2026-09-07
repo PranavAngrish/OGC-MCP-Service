@@ -227,7 +227,16 @@ class OutputArtifactPipeline:
         }
         if process_id:
             execution["processId"] = process_id[:300]
-        resolved_job_id = job_id or _job_id(response.data, response.location)
+        # A few synchronous deployments (notably IDEE/IGN) include a
+        # Location header pointing at a job resource even though the complete
+        # output is already in the 200 response body. Do not expose that
+        # misleading location as a job handle when the execution succeeded
+        # inline; it would cause clients to request a broken /jobs/... route.
+        resolved_job_id = job_id or (
+            _job_id(response.data, response.location)
+            if async_submission
+            else ""
+        )
         if resolved_job_id:
             execution["jobId"] = resolved_job_id
         if plan_id:

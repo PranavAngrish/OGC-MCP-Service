@@ -1,10 +1,10 @@
 {
   "$schema": "./schemas/server-config.schema.json",
   "default_servers": {
-  "common": "pygeoapi-demo",
-  "features": "pygeoapi-demo",
+  "common": "idee-processes",
+  "features": "idee-features",
   "records": "pygeoapi-demo",
-  "processes": "geolabs-tb17"
+  "processes": "idee-processes"
 },
   "store": {
     "backend": "memory",
@@ -78,6 +78,52 @@
   "limits": {
     "timeout_seconds": 30,
     "max_response_bytes": 5000000
+  }
+},
+{
+  "id": "idee-processes",
+  "title": "Spain National Cartographic System OGC API Processes",
+  "description": "Official IDEE/IGN processing API backed by the national 5 m digital terrain model and cadastral/solar-radiation data.",
+  "base_url": "https://api-processes.idee.es",
+  "services": ["common", "processes"],
+  "security": {
+    "allow_private_networks": false,
+    "allowed_reference_hosts": [],
+    "allow_unlisted_reference_hosts": false,
+    "validate_execute_references": true
+  },
+  "limits": {
+    "timeout_seconds": 120,
+    "max_response_bytes": 15000000
+  },
+  "output_resolution": {
+    "enabled": true,
+    "allow_same_origin": true,
+    "allowed_hosts": ["api-processes.idee.es", "api-features.idee.es", "api-maps.idee.es"],
+    "allow_private_networks": false,
+    "allow_insecure_redirects": false,
+    "max_redirects": 3,
+    "max_resolution_seconds": 120,
+    "max_response_bytes": 15000000,
+    "max_outputs": 20,
+    "inline_preview_bytes": 0
+  }
+},
+{
+  "id": "idee-features",
+  "title": "Spain National Cartographic System OGC API Features",
+  "description": "Official IDEE feature collections, including national address, land-use, transport, hydrography and elevation-related datasets.",
+  "base_url": "https://api-features.idee.es",
+  "services": ["common", "features"],
+  "security": {
+    "allow_private_networks": false,
+    "allowed_reference_hosts": [],
+    "allow_unlisted_reference_hosts": false,
+    "validate_execute_references": true
+  },
+  "limits": {
+    "timeout_seconds": 60,
+    "max_response_bytes": 15000000
   }
 }
   ]

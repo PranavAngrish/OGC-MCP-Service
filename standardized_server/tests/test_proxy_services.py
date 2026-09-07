@@ -287,6 +287,47 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertEqual(completed.execution["reported_status"], "successful")
         self.assertIn("completed_at", completed.execution)
 
+    def test_planner_completes_inline_result_when_location_header_is_misleading(self) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/processes/Delaunay" and request.method == "GET":
+                return httpx.Response(200, json={"id": "Delaunay", "inputs": {}})
+            if request.url.path == "/processes/Delaunay/execution":
+                return httpx.Response(
+                    200,
+                    headers={"Location": "/jobs/inline-result"},
+                    json={"id": "Delaunay", "values": [1, 2, 3]},
+                )
+            if request.url.path.startswith("/jobs/"):
+                self.fail("Inline output must not trigger job polling or retrieval.")
+            return httpx.Response(404, json={"detail": "missing"})
+
+        registry = build_registry()
+        client = OgcHttpClient(transport=httpx.MockTransport(handler))
+        planner = ProxyPlanner(
+            features=FeaturesService(registry, client),
+            processes=ProcessesService(registry, client),
+        )
+        plan = planner.create_plan(
+            {
+                "operation": "process_execute",
+                "process_id": "Delaunay",
+                "execute_request": {"inputs": {}},
+            }
+        )
+        planner.confirm_plan(plan.plan_id, approved=True)
+        result = planner.execute_plan(plan.plan_id)
+
+        completed = planner.get_plan(plan.plan_id)
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed.status, "completed")
+        self.assertFalse(completed.execution["asynchronous"])
+        self.assertEqual(result["data"]["values"], [1, 2, 3])
+        self.assertEqual(calls, ["/processes/Delaunay", "/processes/Delaunay/execution"])
+
     def test_planner_terminalizes_an_untrackable_async_submission(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/processes/Delaunay" and request.method == "GET":
