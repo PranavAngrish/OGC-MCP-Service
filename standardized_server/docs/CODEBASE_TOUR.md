@@ -124,11 +124,19 @@ Implements:
 
 - collection listing;
 - collection description;
+- a bounded query-surface discovery call (`describe_query_surface`) that merges
+  collection metadata, conformance, queryables, and one sample so callers know
+  which fields are filterable/returnable/observed;
+- a validated, auto-paginated declarative query (`query`, backing
+  `ogc_features_query`) that translates structured filters to CQL2, follows
+  same-origin `rel=next` links, and returns a coordinate-free facts table plus
+  an explicit `evidence.safeToAnswer` completeness gate;
 - feature item listing;
 - single feature retrieval.
 
-`get_items` also returns `guidance.reference_href` and `guidance.source`, which
-are used by the process planning workflow for referenced feature inputs.
+`get_items` and `query` both return `guidance.reference_href` and
+`guidance.source`, which are used by the process planning workflow for
+referenced feature inputs.
 
 ### `modules/records.py`
 
@@ -142,7 +150,8 @@ Implements:
 
 Implements:
 
-- process listing;
+- process listing (with bounded, paginated `search_text` filtering for large
+  catalogues);
 - process description;
 - process execution;
 - job listing;
@@ -151,6 +160,9 @@ Implements:
 - job dismissal.
 
 Execution validates referenced inputs before the network call leaves the server.
+Successful execution and job-result responses are also passed through
+`runtime.output_artifacts` (see `artifacts/` below) to build the versioned
+`output_manifest`.
 
 ## Proxy Services
 
@@ -216,6 +228,62 @@ locally.
 
 Defines the typed workflow state used by LangGraph and the local fallback.
 
+## Process Output Artifacts
+
+The `artifacts/` package turns a raw upstream process response into a
+versioned, presentation-aware `output_manifest`. It is used by
+`modules/processes.py` (via `runtime.output_artifacts`) for both synchronous
+execution and `ogc_jobs_get_results`.
+
+### `artifacts/pipeline.py`
+
+`OutputArtifactPipeline.build(...)` is the orchestrator. It extracts advertised
+outputs, resolves inline values or references (budgeted through
+`transport.OutputResolutionBudget`), detects media type, parses with a
+registered adapter, stores original/canonical/preview representations, and
+decides which presentations (map/table/chart/metric/image/text/download) are
+actually ready.
+
+### `artifacts/extractors.py`
+
+Recognizes advertised output identifiers and common OGC output wrapper shapes
+(`value`, `data`, `href`, nested `format.mediaType`). Does not follow arbitrary
+links found inside feature properties or record metadata.
+
+### `artifacts/detection.py`
+
+Detects and normalizes media types, combining the advertised process output,
+the requested output format, wrapper metadata, HTTP content type, and bounded
+content inspection.
+
+### `artifacts/parsers/`
+
+Format adapters: `geojson.py`, `gml.py`, `wkt.py`, and `generic.py` (tabular
+/ JSON / text fallback). Each adapter probes a bounded sample, decodes with
+explicit resource limits, and produces canonical and/or bounded preview data.
+
+### `artifacts/models.py`
+
+Dataclasses shared across the pipeline: `OutputCandidate`, `ParsedArtifact`,
+and the manifest schema version/state helpers (`retrieval_state`,
+`interpretation_state`).
+
+### `artifacts/previews.py`
+
+Builds bounded, renderer-safe previews (`bounded_geojson_preview`,
+`bounded_json_preview`) that retain complete features/rows rather than cutting
+JSON or geometry mid-structure.
+
+### `artifacts/registry.py`
+
+`ParserRegistry` selects the adapter for a detected media type.
+
+### `artifacts/store.py`
+
+`ArtifactStore` persists original/canonical/preview representations behind
+opaque `art_*` handles with a configurable TTL, retrievable via
+`ogc_proxy_artifact_retrieve`.
+
 ## Tests
 
 The `tests/` package uses Python `unittest` and `httpx.MockTransport`.
@@ -223,13 +291,19 @@ The `tests/` package uses Python `unittest` and `httpx.MockTransport`.
 Important files:
 
 - `test_app.py`: FastMCP tool registration and response-mode behavior.
+- `test_artifacts.py`: output-artifact pipeline -- extraction, resolution,
+  media-type detection, parser adapters, and presentation-state decisions.
 - `test_config.py`: config parsing and registry validation.
+- `test_feature_query.py`: `ogc_features_query` -- CQL2 translation,
+  pagination, the facts table, and the `evidence.safeToAnswer` gate.
 - `test_transport.py`: auth injection, limits, and upstream errors.
 - `test_security.py`: URL/path/reference validation.
 - `test_processes.py`: process service behavior.
 - `test_input_schema.py`: conservative input-schema validation.
 - `test_proxy_services.py`: planner, workflow, memory, capabilities, JWT retry.
 - `test_store.py`: in-memory and Redis store behavior.
+- `test_tool_contract_schema.py`: validates `spec/ogc-mcp-tool-contract.json`
+  itself against its embedded Draft 2020-12 JSON Schema.
 
 Run all tests from the repository root:
 

@@ -34,9 +34,14 @@ one `ProxyRuntime` object that wires together:
 - process description cache;
 - proxy planner;
 - LangGraph-ready planning workflow;
+- `ArtifactStore` and `OutputArtifactPipeline` for process-output resolution,
+  parsing, and presentation state (see [Process Output Artifacts](OUTPUT_ARTIFACTS.md));
 - operator policy settings.
 
 `app.py` then registers FastMCP resources and tools using that runtime.
+`ProcessesService` also receives `output_artifacts` so `processes.execute`,
+`jobs.get_results`, and the proxy plan execution path all build an
+`output_manifest` from the same pipeline.
 
 ## Package Boundaries
 
@@ -48,17 +53,40 @@ src/ogc_mcp_reference/
 |-- models.py           typed dataclass models
 |-- registry.py         server resolution and service checks
 |-- security.py         URL, path, and execute-reference validation
-|-- transport.py        bounded HTTP client and auth headers
+|-- transport.py        bounded HTTP client, auth headers, OutputResolutionBudget
 |-- result.py           success/error envelopes
 |-- errors.py           stable error types
 |-- modules/            OGC API module operations
 |-- services/           proxy services and stateful support
-`-- workflows/          plan workflow orchestration
+|-- workflows/          plan workflow orchestration
+`-- artifacts/          process-output resolution, parsing, and artifact storage
 ```
 
 The `modules/` layer does not know about MCP. It builds OGC HTTP requests and
 returns structured envelopes. The MCP-specific behavior, including response
 summary mode, lives at the tool boundary in `app.py`.
+
+## Process Output Artifact Pipeline
+
+Synchronous process results and `ogc_jobs_get_results` responses both pass
+through `OutputArtifactPipeline` ([`artifacts/pipeline.py`](../src/ogc_mcp_reference/artifacts/pipeline.py))
+before they reach the MCP result envelope:
+
+```text
+upstream response
+  -> extract advertised named outputs (artifacts/extractors.py)
+  -> resolve inline values or follow references (transport.py, budgeted)
+  -> detect media type (artifacts/detection.py)
+  -> parse with a registered adapter (artifacts/parsers/: geojson, gml, wkt, generic)
+  -> store original/canonical/preview representations behind art_* handles
+  -> classify presentation readiness (map/table/chart/metric/image/text/download)
+  -> return a versioned output_manifest
+```
+
+The manifest tracks four independent states per output -- `execution`,
+`retrieval`, `interpretation`, and per-presentation `state` -- so an `ok: true`
+tool envelope never implies that a map or download actually exists. See
+[Process Output Artifacts](OUTPUT_ARTIFACTS.md) for the full contract.
 
 ## Tool Surface
 
@@ -150,10 +178,17 @@ production.
 
 ## Known Gaps
 
-- Plan and memory visibility is deployment-wide, not scoped per user/session.
+- Plan, proxy-memory, and artifact (`art_*`) visibility is deployment-wide at
+  the Python MCP layer, not scoped per user/session. The bundled `ui/` gateway
+  adds session-scoped artifact registration at its own boundary, but that does
+  not remove the Python-layer limitation for other MCP clients.
 - DNS names that resolve to private addresses require infrastructure-level
   egress controls or future DNS-aware validation.
 - The conservative input-schema checker is intentionally not a full JSON Schema
   validator.
 - Capability fallback rules beyond async selection are documented but not fully
   implemented as processing behavior.
+- Format adapters exist for GeoJSON, GML, WKT, and generic tabular data; raster,
+  coverage, and tile outputs are detected and stored but have no compatible
+  preview/tiler adapter yet, so they remain safe reference/download artifacts
+  rather than rendered previews.

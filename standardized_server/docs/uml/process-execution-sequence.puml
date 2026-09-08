@@ -69,10 +69,16 @@ Planner -> Store : put(running)
 Planner -> Processes : execute(process_id, stored execute_request)
 Processes -> OGC : POST /processes/{id}/execution
 OGC --> Processes : result or job metadata
-Processes --> Planner : result envelope
+Processes -> Processes : OutputArtifactPipeline.build(...)
+note right of Processes
+  extract outputs -> resolve refs (budgeted)
+  -> detect media type -> parse -> store
+  art_* representations -> output_manifest
+end note
+Processes --> Planner : result envelope + output_manifest
 Planner -> Store : put(completed)
 Workflow --> App : result envelope
-App --> Client : summary or raw response
-Client --> User : final result
+App --> Client : summary/raw response + output_manifest
+Client --> User : final result and available presentations
 
 @enduml

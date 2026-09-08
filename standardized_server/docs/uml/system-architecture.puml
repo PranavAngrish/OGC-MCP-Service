@@ -1,23 +1,32 @@
 @startuml
-title OGC API MCP Reference Server - System Architecture
+title OGC API MCP Reference System - System Architecture
 
 skinparam componentStyle rectangle
 
 actor "Human User" as User
-component "MCP Client" as Client
+
+package "Terra Console (ui/)" {
+  component "React SPA\n(chat, maps, approval cards)" as React
+  component "Node/Express Gateway\nindex.mjs, agent.mjs" as Gateway
+  component "Gemini\n(OpenAI-compatible API)" as Gemini
+}
+
+component "MCP Client (stdio / streamable-http)" as Client
 component "FastMCP Server\napp.py" as App
 component "Proxy Runtime\nruntime.py" as Runtime
 database "Plan Store\nmemory or Redis" as PlanStore
 database "Proxy Memory Store\nmemory or Redis" as MemoryStore
+database "Artifact Store\nmemory or Redis (art_*)" as ArtifactStoreDb
 
 package "Runtime Services" {
   component "ServerRegistry" as Registry
-  component "OgcHttpClient" as Transport
+  component "OgcHttpClient\n(bounded, budgeted)" as Transport
   component "CapabilityCache" as Capabilities
   component "FallbackEngine" as Fallbacks
   component "ProxyPlanner" as Planner
-  component "PlanningWorkflow" as Workflow
+  component "PlanningWorkflow\n(LangGraph-ready)" as Workflow
   component "ResponseSanitizer" as Sanitizer
+  component "OutputArtifactPipeline" as ArtifactPipeline
 }
 
 package "OGC Module Services" {
@@ -27,14 +36,20 @@ package "OGC Module Services" {
   component "ProcessesService" as Processes
 }
 
-cloud "Registered OGC API Servers" as OGC {
+cloud "Registered OGC API Servers\n(operator-approved only)" as OGC {
   component "Common API" as CommonApi
   component "Features API" as FeaturesApi
   component "Records API" as RecordsApi
-  component "Processes API" as ProcessesApi
+  component "Processes/Jobs API" as ProcessesApi
 }
 
-User --> Client
+User --> React : natural-language request
+React --> Gateway : POST /api/chat (SSE stream)
+Gateway --> Gemini : conversation + MCP tool schemas
+Gemini --> Gateway : tool call or final answer
+Gateway --> Client : MCP tool call (ogc_proxy_confirm_plan\nand ogc_proxy_artifact_retrieve withheld from Gemini)
+Gateway --> React : tool_start/tool_result, approval_request,\noutput_manifest, map_data, answer, done
+
 Client --> App : MCP tool calls
 App --> Runtime
 Runtime --> Registry
@@ -48,19 +63,30 @@ Runtime --> Fallbacks
 Runtime --> Planner
 Runtime --> Workflow
 Runtime --> Sanitizer
+Runtime --> ArtifactPipeline
 
 Planner --> PlanStore
-App --> MemoryStore : summary mode
+App --> MemoryStore : response_mode="summary"
+ArtifactPipeline --> ArtifactStoreDb : art_* handles
+Processes --> ArtifactPipeline : execute / jobs.get_results
 
 Common --> Transport
 Features --> Transport
 Records --> Transport
 Processes --> Transport
 Capabilities --> Transport
+ArtifactPipeline --> Transport : bounded reference resolution
 
 Transport --> CommonApi
 Transport --> FeaturesApi
 Transport --> RecordsApi
 Transport --> ProcessesApi
+
+note right of Gateway
+  Node privately hydrates art_* / mem_*
+  handles for rendering; Gemini only ever
+  sees coordinate-stripped, sanitized
+  summaries and manifest states.
+end note
 
 @enduml

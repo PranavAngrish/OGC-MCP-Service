@@ -27,6 +27,41 @@ PYTHONPATH=standardized_server/src \
 These tests call FastMCP tools through `mcp.call_tool(...)` rather than only
 calling service classes.
 
+### Process Output Artifacts
+
+`tests/test_artifacts.py` checks the `artifacts/` pipeline:
+
+- advertised-output extraction and OGC output-wrapper recognition;
+- inline vs. referenced output resolution, including the shared
+  `OutputResolutionBudget` (time/bytes/fetch-count ceilings);
+- media-type detection precedence (advertised, requested, wrapper, HTTP
+  content-type, content sniffing, extension);
+- GeoJSON, GML, WKT, and generic/tabular parser adapters;
+- canonical vs. bounded-preview representation construction, including the
+  "complete features/rows only, never truncate mid-structure" rule;
+- presentation-readiness decisions (map/table/chart/metric/image/text/download)
+  and the four independent execution/retrieval/interpretation/presentation
+  states.
+
+### Feature Query And Evidence Gate
+
+`tests/test_feature_query.py` checks `ogc_features_query`:
+
+- structured filter validation against the discovered query surface;
+- translation of filters (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `like`,
+  `contains_ci`, `candidate_ci`, `in`) to CQL2 text;
+- bounded, automatic `rel=next` pagination;
+- the coordinate-free facts table and `evidence.safeToAnswer` /
+  `evidence.qualifications` completeness gate;
+- storage of the full feature collection behind one proxy-memory handle.
+
+### Tool Contract Schema
+
+`tests/test_tool_contract_schema.py` checks that
+[`spec/ogc-mcp-tool-contract.json`](../spec/ogc-mcp-tool-contract.json) itself
+is valid against its own embedded Draft 2020-12 JSON Schema, so the contract
+document cannot silently drift into an invalid shape.
+
 ### Configuration
 
 `tests/test_config.py` checks:

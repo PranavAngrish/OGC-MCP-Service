@@ -18,6 +18,8 @@ class ProxyRuntime {
   planner
   workflow
   policy
+  artifacts
+  output_artifacts
 }
 
 class ServerRegistry {
@@ -77,6 +79,19 @@ class ResponseSanitizer
 class ProcessDescriptionCache
 class TokenManager
 
+class ArtifactStore {
+  put(value, media_type, role)
+  retrieve(handle)
+}
+
+class OutputArtifactPipeline {
+  build(response, server, operation, process_id, job_id, plan_id, execute_request)
+}
+
+class ParserRegistry {
+  parse(value, media_type)
+}
+
 ProxyRuntime --> ServerRegistry
 ProxyRuntime --> OgcHttpClient
 ProxyRuntime --> CommonService
@@ -90,6 +105,8 @@ ProxyRuntime --> ResponseSanitizer
 ProxyRuntime --> ProcessDescriptionCache
 ProxyRuntime --> ProxyPlanner
 ProxyRuntime --> PlanningWorkflow
+ProxyRuntime --> ArtifactStore
+ProxyRuntime --> OutputArtifactPipeline
 
 CommonService --> ServerRegistry
 FeaturesService --> ServerRegistry
@@ -112,5 +129,10 @@ RedisStore ..|> KeyValueStore
 PlanningWorkflow --> ProxyPlanner
 PlanningWorkflow --> CapabilityCache
 PlanningWorkflow --> FallbackEngine
+
+OutputArtifactPipeline --> OgcHttpClient
+OutputArtifactPipeline --> ArtifactStore
+OutputArtifactPipeline --> ParserRegistry
+ProcessesService --> OutputArtifactPipeline
 
 @enduml
